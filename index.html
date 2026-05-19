@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Playlist Timestamper</title>
+<style>
+  :root {
+    --bg: #121212;
+    --card: #1e1e1e;
+    --border: #2e2e2e;
+    --text: #ffffff;
+    --text-dim: #a0a0a0;
+    --green: #1db954;
+    --green-hover: #1ed760;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 24px 16px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  .label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  input[type=text] {
+    background: #2a2a2a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 9px 11px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--green); }
+  button {
+    background: var(--green);
+    color: #000;
+    border: none;
+    border-radius: 999px;
+    padding: 9px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+  }
+  button:hover { background: var(--green-hover); }
+  button.secondary {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  button.secondary:hover { background: #2a2a2a; color: var(--text); }
+  button.icon {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .track-row {
+    display: grid;
+    grid-template-columns: 1fr 96px auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .track-row:last-child { border-bottom: none; }
+  .track-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track-meta { font-size: 12px; color: var(--text-dim); }
+  .time-input { width: 96px; text-align: center; }
+  #status { font-size: 13px; color: var(--text-dim); margin-top: 8px; }
+  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
+  .badge.ok { background: rgba(29,185,84,0.2); color: var(--green); }
+  .np-title { font-size: 16px; font-weight: 600; }
+  .np-meta { font-size: 13px; color: var(--text-dim); }
+  .np-stamp { font-size: 12px; color: var(--green); margin-top: 4px; }
+  .hidden { display: none; }
+  .hint { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Playlist Timestamper</h1>
+  <p class="sub">Play a Spotify playlist where each song starts at a time you choose.</p>
+
+  <div class="card">
+    <div id="auth-disconnected">
+      <div class="label">Step 1 — Connect</div>
+      <button onclick="startAuth()">Connect Spotify</button>
+      <div id="status">Not connected. Spotify Premium required.</div>
+    </div>
+    <div id="auth-connected" class="hidden">
+      <div class="row">
+        <span class="badge ok">Connected</span>
+        <span id="user-name" style="font-size:14px;"></span>
+        <button class="secondary icon" style="margin-left:auto;" onclick="logout()">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="now-playing" class="card hidden">
+    <div class="label">Now Playing</div>
+    <div class="np-title" id="np-title">—</div>
+    <div class="np-meta" id="np-meta">—</div>
+    <div class="np-stamp" id="np-stamp"></div>
+  </div>
+
+  <div class="card">
+    <div class="label">Step 2 — Load a playlist</div>
+    <div class="row">
+      <input type="text" id="playlist-url" placeholder="https://open.spotify.com/playlist/..." style="flex:1;" />
+      <button onclick="loadPlaylist()">Load</button>
+    </div>
+    <div class="hint" id="playlist-status"></div>
+  </div>
+
+  <div id="tracks-card" class="card hidden">
+    <div class="row" style="margin-bottom:12px;">
+      <span style="font-size:16px; font-weight:600;" id="playlist-name"></span>
+      <button style="margin-left:auto;" onclick="startPlayback()">▶ Play all</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px;">Set a start time per track as <strong>mm:ss</strong>. Blank = start from beginning. Make sure Spotify is open on a device.</div>
+    <div id="track-list"></div>
+  </div>
+</div>
+
+<script>
+const CLIENT_ID = '0c4a2afadb1a4556b995ec2be8bed6bd';
+const REDIRECT_URI = 'https://spotify.it-ohio.net/';
+const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
+
+let accessToken = null;
+let tracks = [];
+let currentTrackIndex = 0;
+let watchInterval = null;
+
+/* ---------- PKCE auth ---------- */
+function genVerifier(len) {
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+async function genChallenge(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+async function startAuth() {
+  const verifier = genVerifier(64);
+  sessionStorage.setItem('verifier', verifier);
+  const challenge = await genChallenge(verifier);
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+  });
+  window.location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
+}
+async function exchangeCode(code) {
+  const verifier = sessionStorage.getItem('verifier');
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: CLIENT_ID,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier,
+    })
+  });
+  const data = await res.json();
+  if (data.access_token) {
+    accessToken = data.access_token;
+    localStorage.setItem('sp_token', accessToken);
+    localStorage.setItem('sp_exp', Date.now() + data.expires_in * 1000);
+    window.history.replaceState({}, '', '/');
+    showConnected();
+  } else {
+    document.getElementById('status').textContent = 'Auth failed: ' + (data.error_description || JSON.stringify(data));
+  }
+}
+function showConnected() {
+  fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + accessToken } })
+    .then(r => r.json())
+    .then(u => {
+      if (u.error) { logout(); return; }
+      document.getElementById('auth-disconnected').classList.add('hidden');
+      document.getElementById('auth-connected').classList.remove('hidden');
+      document.getElementById('user-name').textContent = u.display_name || u.id;
+    });
+}
+function logout() {
+  accessToken = null;
+  localStorage.removeItem('sp_token');
+  localStorage.removeItem('sp_exp');
+  document.getElementById('auth-disconnected').classList.remove('hidden');
+  document.getElementById('auth-connected').classList.add('hidden');
+  document.getElementById('status').textContent = 'Not connected. Spotify Premium required.';
+}
+
+/* ---------- playlist loading ---------- */
+function extractPlaylistId(url) {
+  const m = url.match(/playlist[/:]([a-zA-Z0-9]+)/);
+  return m ? m[1] : null;
+}
+async function loadPlaylist() {
+  if (!accessToken) { alert('Connect Spotify first.'); return; }
+  const id = extractPlaylistId(document.getElementById('playlist-url').value.trim());
+  const statusEl = document.getElementById('playlist-status');
+  if (!id) { statusEl.textContent = 'Could not find a playlist ID in that URL.'; return; }
+  statusEl.textContent = 'Loading...';
+  const head = await fetch(
+    `https://api.spotify.com/v1/playlists/${id}?fields=name,tracks(items(track(id,name,artists,duration_ms,uri)),next)`,
+    { headers: { Authorization: 'Bearer ' + accessToken } }
+  );
+  const data = await head.json();
+  if (data.error) { statusEl.textContent = 'Error: ' + data.error.message; return; }
+  document.getElementById('playlist-name').textContent = data.name;
+  let collected = (data.tracks.items || []).filter(i => i.track).map(i => i.track);
+  let next = data.tracks.next;
+  while (next) {
+    const r = await fetch(next, { headers: { Authorization: 'Bearer ' + accessToken } });
+    const d = await r.json();
+    collected = collected.concat((d.items || []).filter(i => i.track).map(i => i.track));
+    next = d.next;
+  }
+  tracks = collected.map(t => ({ ...t, startMs: 0 }));
+  statusEl.textContent = tracks.length + ' tracks loaded.';
+  renderTracks();
+  document.getElementById('tracks-card').classList.remove('hidden');
+}
+
+/* ---------- time helpers ---------- */
+function msToDisplay(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function parseTime(str) {
+  if (!str || !str.trim()) return 0;
+  const p = str.trim().split(':');
+  if (p.length === 2) return ((parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0)) * 1000;
+  return (parseInt(p[0]) || 0) * 1000;
+}
+
+/* ---------- rendering ---------- */
+function renderTracks() {
+  const list = document.getElementById('track-list');
+  list.innerHTML = '';
+  tracks.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.className = 'track-row';
+    div.innerHTML =
+      '<div>' +
+        '<div class="track-name">' + (i+1) + '. ' + escapeHtml(t.name) + '</div>' +
+        '<div class="track-meta">' + escapeHtml(t.artists.map(a=>a.name).join(', ')) + ' · ' + msToDisplay(t.duration_ms) + '</div>' +
+      '</div>' +
+      '<input class="time-input" type="text" placeholder="0:00" id="ts-' + i + '" value="' + (t.startMs ? msToDisplay(t.startMs) : '') + '" />' +
+      '<button class="secondary icon" onclick="playFromHere(' + i + ')">▶</button>';
+    list.appendChild(div);
+  });
+}
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ---------- playback ---------- */
+async function getActiveDevice() {
+  const res = await fetch('https://api.spotify.com/v1/me/player/devices', { headers: { Authorization: 'Bearer ' + accessToken } });
+  const data = await res.json();
+  const devices = data.devices || [];
+  const active = devices.find(d => d.is_active) || devices[0];
+  return active ? active.id : null;
+}
+async function playTrack(index) {
+  if (index >= tracks.length) {
+    clearInterval(watchInterval);
+    document.getElementById('now-playing').classList.add('hidden');
+    return;
+  }
+  const t = tracks[index];
+  const startMs = parseTime(document.getElementById('ts-' + index)?.value || '');
+  tracks[index].startMs = startMs;
+  const deviceId = await getActiveDevice();
+  if (!deviceId) { alert('No Spotify device found. Open Spotify on your phone or desktop, start playing anything briefly, then try again.'); return; }
+  const res = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + deviceId, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uris: [t.uri], position_ms: startMs })
+  });
+  if (res.status === 403) { alert('Playback failed — this usually means the account is not Spotify Premium.'); return; }
+  currentTrackIndex = index;
+  document.getElementById('now-playing').classList.remove('hidden');
+  document.getElementById('np-title').textContent = t.name;
+  document.getElementById('np-meta').textContent = t.artists.map(a=>a.name).join(', ');
+  document.getElementById('np-stamp').textContent = startMs > 0 ? 'Started at ' + msToDisplay(startMs) : 'Started from beginning';
+  watchForEnd(t.uri);
+}
+function watchForEnd(uri) {
+  clearInterval(watchInterval);
+  watchInterval = setInterval(async () => {
+    const res = await fetch('https://api.spotify.com/v1/me/player', { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (res.status === 204) return;
+    const state = await res.json();
+    if (!state || !state.item) return;
+    if (state.item.uri !== uri) {
+      clearInterval(watchInterval);
+      playTrack(currentTrackIndex + 1);
+    }
+  }, 2000);
+}
+async function startPlayback() {
+  if (!accessToken) { alert('Connect Spotify first.'); return; }
+  if (!tracks.length) { alert('Load a playlist first.'); return; }
+  await playTrack(0);
+}
+async function playFromHere(i) {
+  if (!accessToken) { alert('Connect Spotify first.'); return; }
+  await playTrack(i);
+}
+
+/* ---------- init ---------- */
+(async () => {
+  const code = new URLSearchParams(window.location.search).get('code');
+  if (code) { await exchangeCode(code); return; }
+  const stored = localStorage.getItem('sp_token');
+  const exp = localStorage.getItem('sp_exp');
+  if (stored && exp && Date.now() < parseInt(exp)) {
+    accessToken = stored;
+    showConnected();
+  }
+})();
+</script>
+</body>
+</html>
