@@ -118,21 +118,25 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Playlist Timestamper</h1>
-  <p class="sub">Play a Spotify playlist where each song starts at a time you choose.</p>
+  <div class="row" style="align-items:flex-start;">
+    <div style="flex:1; min-width:0;">
+      <h1>Playlist Timestamper</h1>
+      <p class="sub">Play a Spotify playlist where each song starts at a time you choose.</p>
+    </div>
+    <div id="auth-connected" class="hidden" style="flex-shrink:0; text-align:right;">
+      <div class="row" style="justify-content:flex-end; margin-bottom:4px;">
+        <span class="badge ok">Connected</span>
+        <span id="user-name" style="font-size:14px;"></span>
+      </div>
+      <button class="secondary icon" onclick="logout()">Disconnect</button>
+    </div>
+  </div>
 
-  <div class="card">
+  <div class="card" id="connect-card">
     <div id="auth-disconnected">
       <div class="label">Step 1 — Connect</div>
       <button onclick="startAuth()">Connect Spotify</button>
       <div id="status">Not connected. Spotify Premium required.</div>
-    </div>
-    <div id="auth-connected" class="hidden">
-      <div class="row">
-        <span class="badge ok">Connected</span>
-        <span id="user-name" style="font-size:14px;"></span>
-        <button class="secondary icon" style="margin-left:auto;" onclick="logout()">Disconnect</button>
-      </div>
     </div>
   </div>
 
@@ -154,8 +158,8 @@
 
   <div id="tracks-card" class="card hidden">
     <div class="row" style="margin-bottom:12px;">
-      <span style="font-size:16px; font-weight:600;" id="playlist-name"></span>
-      <div class="row" style="margin-left:auto;">
+      <span style="font-size:16px; font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="playlist-name"></span>
+      <div class="row" style="flex-shrink:0;">
         <button onclick="startPlayback()">▶ Play all</button>
         <button id="btn-next" class="secondary" onclick="nextClip()" disabled>▶▶ Next</button>
         <button id="btn-stop" class="danger" onclick="stopPlayback()" disabled>■ Stop</button>
@@ -239,7 +243,7 @@ function showConnected() {
     .then(r => r.json())
     .then(u => {
       if (u.error) { logout(); return; }
-      document.getElementById('auth-disconnected').classList.add('hidden');
+      document.getElementById('connect-card').classList.add('hidden');
       document.getElementById('auth-connected').classList.remove('hidden');
       document.getElementById('user-name').textContent = u.display_name || u.id;
     });
@@ -248,7 +252,7 @@ function logout() {
   accessToken = null;
   localStorage.removeItem('sp_token');
   localStorage.removeItem('sp_exp');
-  document.getElementById('auth-disconnected').classList.remove('hidden');
+  document.getElementById('connect-card').classList.remove('hidden');
   document.getElementById('auth-connected').classList.add('hidden');
   document.getElementById('status').textContent = 'Not connected. Spotify Premium required.';
 }
