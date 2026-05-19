@@ -228,9 +228,11 @@
 <script>
 const CLIENT_ID = '0c4a2afadb1a4556b995ec2be8bed6bd';
 const REDIRECT_URI = 'https://spotify.it-ohio.net/';
-const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
+const SCOPES = 'user-read-private user-read-email streaming user-modify-playback-state user-read-playback-state playlist-read-private playlist-read-collaborative user-library-read';
 
 let accessToken = null;
+let refreshToken = null;
+let tokenExpiry = 0;
 let tracks = [];
 let currentTrackIndex = 0;
 
@@ -273,17 +275,79 @@ async function exchangeCode(code) {
   });
   const data = await res.json();
   if (data.access_token) {
-    accessToken = data.access_token;
-    localStorage.setItem('sp_token', accessToken);
-    localStorage.setItem('sp_exp', Date.now() + data.expires_in * 1000);
+    saveTokens(data);
     window.history.replaceState({}, '', '/');
     showConnected();
   } else {
     document.getElementById('status').textContent = 'Auth failed: ' + (data.error_description || JSON.stringify(data));
   }
 }
+
+// store access + refresh tokens from a token-endpoint response
+function saveTokens(data) {
+  accessToken = data.access_token;
+  tokenExpiry = Date.now() + data.expires_in * 1000;
+  localStorage.setItem('sp_token', accessToken);
+  localStorage.setItem('sp_exp', tokenExpiry);
+  // a refresh token is returned on first auth; on refresh, Spotify may or may not send a new one
+  if (data.refresh_token) {
+    refreshToken = data.refresh_token;
+    localStorage.setItem('sp_refresh', refreshToken);
+  }
+}
+
+// trade the refresh token for a new access token; returns true on success
+async function refreshAccessToken() {
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      })
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      saveTokens(data);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ensure the access token is valid; refresh it if it expires within 5 min
+async function ensureToken() {
+  if (accessToken && Date.now() < tokenExpiry - 5 * 60 * 1000) return true;
+  return await refreshAccessToken();
+}
+
+// wrapper for all Spotify API calls: refreshes token first, retries once on 401
+async function apiFetch(url, options) {
+  options = options || {};
+  await ensureToken();
+  const withAuth = () => Object.assign({}, options, {
+    headers: Object.assign({}, options.headers, { Authorization: 'Bearer ' + accessToken })
+  });
+  let res = await fetch(url, withAuth());
+  if (res.status === 401) {
+    // token rejected — try one forced refresh, then retry
+    const ok = await refreshAccessToken();
+    if (ok) {
+      res = await fetch(url, withAuth());
+    } else {
+      logout();
+      alert('Session expired. Please reconnect to Spotify.');
+    }
+  }
+  return res;
+}
 function showConnected() {
-  fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + accessToken } })
+  apiFetch('https://api.spotify.com/v1/me')
     .then(r => r.json())
     .then(u => {
       if (u.error) { logout(); return; }
@@ -294,10 +358,13 @@ function showConnected() {
 }
 function logout() {
   accessToken = null;
+  refreshToken = null;
+  tokenExpiry = 0;
   myPlaylists = null;
   menuOpen = false;
   localStorage.removeItem('sp_token');
   localStorage.removeItem('sp_exp');
+  localStorage.removeItem('sp_refresh');
   document.getElementById('connect-card').classList.remove('hidden');
   document.getElementById('auth-connected').classList.add('hidden');
   document.getElementById('playlist-dropdown').classList.add('hidden');
@@ -320,8 +387,7 @@ async function loadPlaylistById(id) {
   const statusEl = document.getElementById('playlist-status');
   statusEl.textContent = 'Loading...';
   // playlist name (metadata only)
-  const metaRes = await fetch(`https://api.spotify.com/v1/playlists/${id}?fields=name`,
-    { headers: { Authorization: 'Bearer ' + accessToken } });
+  const metaRes = await apiFetch(`https://api.spotify.com/v1/playlists/${id}?fields=name`);
   const meta = await metaRes.json();
   if (!metaRes.ok || meta.error) {
     statusEl.textContent = 'Could not load playlist: ' + (meta.error ? meta.error.message : 'HTTP ' + metaRes.status);
@@ -332,7 +398,7 @@ async function loadPlaylistById(id) {
   let collected = [];
   let url = `https://api.spotify.com/v1/playlists/${id}/items?limit=100`;
   while (url) {
-    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    const r = await apiFetch(url);
     const d = await r.json();
     if (!r.ok || d.error) {
       statusEl.textContent = 'Could not load tracks: ' + (d.error ? d.error.message : 'HTTP ' + r.status);
@@ -355,7 +421,7 @@ async function fetchMyPlaylists() {
   let collected = [];
   let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
   while (url) {
-    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    const r = await apiFetch(url);
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error ? d.error.message : 'HTTP ' + r.status);
     collected = collected.concat((d.items || []).map(p => ({
@@ -477,7 +543,7 @@ let fadeBusy = false;       // guards against overlapping fades
 let activeDeviceId = null;
 
 async function getActiveDevice() {
-  const res = await fetch('https://api.spotify.com/v1/me/player/devices', { headers: { Authorization: 'Bearer ' + accessToken } });
+  const res = await apiFetch('https://api.spotify.com/v1/me/player/devices');
   const data = await res.json();
   const devices = data.devices || [];
   const active = devices.find(d => d.is_active) || devices[0];
@@ -486,11 +552,8 @@ async function getActiveDevice() {
 
 async function setVolume(pct) {
   const v = Math.max(0, Math.min(100, Math.round(pct)));
-  await fetch('https://api.spotify.com/v1/me/player/volume?volume_percent=' + v +
-    (activeDeviceId ? '&device_id=' + activeDeviceId : ''), {
-    method: 'PUT',
-    headers: { Authorization: 'Bearer ' + accessToken }
-  });
+  await apiFetch('https://api.spotify.com/v1/me/player/volume?volume_percent=' + v +
+    (activeDeviceId ? '&device_id=' + activeDeviceId : ''), { method: 'PUT' });
 }
 
 // ramp volume from -> to over the current fade duration; returns when done
@@ -513,11 +576,8 @@ async function fade(from, to) {
 }
 
 async function pausePlayback() {
-  await fetch('https://api.spotify.com/v1/me/player/pause' +
-    (activeDeviceId ? '?device_id=' + activeDeviceId : ''), {
-    method: 'PUT',
-    headers: { Authorization: 'Bearer ' + accessToken }
-  });
+  await apiFetch('https://api.spotify.com/v1/me/player/pause' +
+    (activeDeviceId ? '?device_id=' + activeDeviceId : ''), { method: 'PUT' });
 }
 
 function parseLengthSec(str) {
@@ -552,9 +612,9 @@ async function playTrack(index) {
 
   // start silent so the fade-in is clean
   await setVolume(0);
-  const res = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + activeDeviceId, {
+  const res = await apiFetch('https://api.spotify.com/v1/me/player/play?device_id=' + activeDeviceId, {
     method: 'PUT',
-    headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ uris: [t.uri], position_ms: startMs })
   });
   if (res.status === 403) { alert('Playback failed — the account may not be Spotify Premium.'); return; }
@@ -629,13 +689,26 @@ async function playFromHere(i) {
 (async () => {
   const code = new URLSearchParams(window.location.search).get('code');
   if (code) { await exchangeCode(code); return; }
-  const stored = localStorage.getItem('sp_token');
-  const exp = localStorage.getItem('sp_exp');
-  if (stored && exp && Date.now() < parseInt(exp)) {
-    accessToken = stored;
+
+  // restore tokens from storage
+  accessToken = localStorage.getItem('sp_token');
+  refreshToken = localStorage.getItem('sp_refresh');
+  tokenExpiry = parseInt(localStorage.getItem('sp_exp')) || 0;
+
+  if (accessToken && Date.now() < tokenExpiry) {
+    // access token still valid
     showConnected();
+  } else if (refreshToken) {
+    // access token expired but we can refresh silently
+    const ok = await refreshAccessToken();
+    if (ok) showConnected();
+    else logout();
   }
+  // otherwise: not logged in, leave the connect card showing
 })();
+
+// proactively refresh the token every 30 minutes so it never goes stale mid-use
+setInterval(() => { if (refreshToken) ensureToken(); }, 30 * 60 * 1000);
 </script>
 </body>
 </html>
