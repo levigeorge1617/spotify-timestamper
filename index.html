@@ -114,6 +114,47 @@
   .np-stamp { font-size: 12px; color: var(--green); margin-top: 4px; }
   .hidden { display: none; }
   .hint { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+  .name-btn {
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .name-btn:hover { background: none; color: var(--green); }
+  .name-btn .caret { font-size: 10px; color: var(--text-dim); }
+  .dropdown {
+    position: absolute;
+    right: 0;
+    margin-top: 6px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 280px;
+    max-height: 320px;
+    overflow-y: auto;
+    z-index: 50;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    text-align: left;
+  }
+  .dd-item {
+    padding: 9px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dd-item:last-child { border-bottom: none; }
+  .dd-item:hover { background: rgba(29,185,84,0.12); color: var(--green); }
+  .dd-item .dd-count { color: var(--text-dim); font-size: 11px; }
+  .dd-empty { padding: 12px; font-size: 12px; color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -123,12 +164,15 @@
       <h1>Playlist Timestamper</h1>
       <p class="sub">Play a Spotify playlist where each song starts at a time you choose.</p>
     </div>
-    <div id="auth-connected" class="hidden" style="flex-shrink:0; text-align:right;">
+    <div id="auth-connected" class="hidden" style="flex-shrink:0; text-align:right; position:relative;">
       <div class="row" style="justify-content:flex-end; margin-bottom:4px;">
         <span class="badge ok">Connected</span>
-        <span id="user-name" style="font-size:14px;"></span>
+        <button class="name-btn" id="name-btn" onclick="togglePlaylistMenu()">
+          <span id="user-name"></span><span class="caret">▼</span>
+        </button>
       </div>
       <button class="secondary icon" onclick="logout()">Disconnect</button>
+      <div id="playlist-dropdown" class="dropdown hidden"></div>
     </div>
   </div>
 
@@ -250,10 +294,13 @@ function showConnected() {
 }
 function logout() {
   accessToken = null;
+  myPlaylists = null;
+  menuOpen = false;
   localStorage.removeItem('sp_token');
   localStorage.removeItem('sp_exp');
   document.getElementById('connect-card').classList.remove('hidden');
   document.getElementById('auth-connected').classList.add('hidden');
+  document.getElementById('playlist-dropdown').classList.add('hidden');
   document.getElementById('status').textContent = 'Not connected. Spotify Premium required.';
 }
 
@@ -265,8 +312,12 @@ function extractPlaylistId(url) {
 async function loadPlaylist() {
   if (!accessToken) { alert('Connect Spotify first.'); return; }
   const id = extractPlaylistId(document.getElementById('playlist-url').value.trim());
+  if (!id) { document.getElementById('playlist-status').textContent = 'Could not find a playlist ID in that URL.'; return; }
+  await loadPlaylistById(id);
+}
+async function loadPlaylistById(id) {
+  if (!accessToken) { alert('Connect Spotify first.'); return; }
   const statusEl = document.getElementById('playlist-status');
-  if (!id) { statusEl.textContent = 'Could not find a playlist ID in that URL.'; return; }
   statusEl.textContent = 'Loading...';
   // playlist name (metadata only)
   const metaRes = await fetch(`https://api.spotify.com/v1/playlists/${id}?fields=name`,
@@ -295,6 +346,78 @@ async function loadPlaylist() {
   renderTracks();
   document.getElementById('tracks-card').classList.remove('hidden');
 }
+
+/* ---------- playlist dropdown menu ---------- */
+let myPlaylists = null;       // cached list of {id, name, count}
+let menuOpen = false;
+
+async function fetchMyPlaylists() {
+  let collected = [];
+  let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+  while (url) {
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error ? d.error.message : 'HTTP ' + r.status);
+    collected = collected.concat((d.items || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      count: p.tracks ? p.tracks.total : 0
+    })));
+    url = d.next;
+  }
+  return collected;
+}
+
+function renderPlaylistMenu() {
+  const dd = document.getElementById('playlist-dropdown');
+  if (myPlaylists === null) {
+    dd.innerHTML = '<div class="dd-empty">Loading playlists...</div>';
+    return;
+  }
+  if (myPlaylists.length === 0) {
+    dd.innerHTML = '<div class="dd-empty">No playlists found.</div>';
+    return;
+  }
+  dd.innerHTML = myPlaylists.map(p =>
+    '<div class="dd-item" onclick="selectPlaylist(\'' + p.id + '\')">' +
+      escapeHtml(p.name) + ' <span class="dd-count">· ' + p.count + '</span>' +
+    '</div>'
+  ).join('');
+}
+
+async function togglePlaylistMenu() {
+  const dd = document.getElementById('playlist-dropdown');
+  menuOpen = !menuOpen;
+  if (!menuOpen) { dd.classList.add('hidden'); return; }
+  dd.classList.remove('hidden');
+  renderPlaylistMenu();
+  if (myPlaylists === null) {
+    try {
+      myPlaylists = await fetchMyPlaylists();
+    } catch (e) {
+      myPlaylists = null;
+      dd.innerHTML = '<div class="dd-empty">Could not load: ' + escapeHtml(e.message) + '</div>';
+      return;
+    }
+    if (menuOpen) renderPlaylistMenu();
+  }
+}
+
+function selectPlaylist(id) {
+  menuOpen = false;
+  document.getElementById('playlist-dropdown').classList.add('hidden');
+  loadPlaylistById(id);
+}
+
+// close the menu when clicking outside it
+document.addEventListener('click', (e) => {
+  if (!menuOpen) return;
+  const wrap = document.getElementById('auth-connected');
+  if (wrap && !wrap.contains(e.target)) {
+    menuOpen = false;
+    document.getElementById('playlist-dropdown').classList.add('hidden');
+  }
+});
 
 /* ---------- time helpers ---------- */
 function msToDisplay(ms) {
