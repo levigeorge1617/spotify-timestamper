@@ -70,12 +70,13 @@
   }
   .track-row {
     display: grid;
-    grid-template-columns: 1fr 78px 78px auto;
+    grid-template-columns: minmax(0, 1fr) 78px 78px auto;
     gap: 8px;
     align-items: center;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
   }
+  .track-row > div:first-child { min-width: 0; }
   .track-row:last-child { border-bottom: none; }
   .track-row.playing {
     background: rgba(29,185,84,0.12);
@@ -86,11 +87,11 @@
   }
   .track-row.playing .track-name { color: var(--green); font-weight: 600; }
   .track-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .track-meta { font-size: 12px; color: var(--text-dim); }
+  .track-meta { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .time-input { width: 78px; text-align: center; padding: 9px 4px; }
   .col-head {
     display: grid;
-    grid-template-columns: 1fr 78px 78px auto;
+    grid-template-columns: minmax(0, 1fr) 78px 78px auto;
     gap: 8px;
     font-size: 10px;
     color: var(--text-dim);
@@ -114,6 +115,12 @@
   .np-stamp { font-size: 12px; color: var(--green); margin-top: 4px; }
   .hidden { display: none; }
   .hint { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+  @media (max-width: 480px) {
+    body { padding: 16px 10px; }
+    .track-row, .col-head { grid-template-columns: minmax(0, 1fr) 58px 58px auto; gap: 5px; }
+    .time-input { width: 58px; padding: 9px 2px; font-size: 13px; }
+    .track-name { font-size: 13px; }
+  }
   .name-btn {
     background: none;
     border: none;
