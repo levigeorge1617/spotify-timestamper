@@ -70,16 +70,50 @@
   }
   .track-row {
     display: grid;
-    grid-template-columns: 1fr 96px auto;
-    gap: 10px;
+    grid-template-columns: 1fr 78px 78px auto;
+    gap: 8px;
     align-items: center;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
   }
   .track-row:last-child { border-bottom: none; }
+  .track-row.playing {
+    background: rgba(29,185,84,0.12);
+    border-radius: 6px;
+    margin: 0 -8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .track-row.playing .track-name { color: var(--green); font-weight: 600; }
   .track-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track-meta { font-size: 12px; color: var(--text-dim); }
-  .time-input { width: 96px; text-align: center; }
+  .time-input { width: 78px; text-align: center; padding: 9px 4px; }
+  .col-head {
+    display: grid;
+    grid-template-columns: 1fr 78px 78px auto;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+    padding: 0 2px;
+  }
+  .col-head span { text-align: center; }
+  .col-head span:first-child { text-align: left; }
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  button.danger { background: #e0245e; color: #fff; }
+  button.danger:hover { background: #f0356f; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:disabled:hover { background: var(--green); }
+  button.danger:disabled:hover { background: #e0245e; }
   #status { font-size: 13px; color: var(--text-dim); margin-top: 8px; }
   .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
   .badge.ok { background: rgba(29,185,84,0.2); color: var(--green); }
@@ -131,8 +165,16 @@
       <span style="font-size:16px; font-weight:600;" id="playlist-name"></span>
       <button style="margin-left:auto;" onclick="startPlayback()">▶ Play all</button>
     </div>
-    <div class="hint" style="margin-bottom:10px;">Set a start time per track as <strong>mm:ss</strong>. Blank = start from beginning. Make sure Spotify is open on a device.</div>
+    <div class="hint" style="margin-bottom:10px;">Each clip starts at <strong>Start</strong> (mm:ss) and plays for <strong>Length</strong> seconds, then fades out. Leave Length blank to play until you hit Stop or Next. Make sure Spotify is open on a device.</div>
+    <div class="col-head">
+      <span>Track</span><span>Start</span><span>Length (s)</span><span></span>
+    </div>
     <div id="track-list"></div>
+    <div class="controls">
+      <button id="btn-stop" class="danger" onclick="stopPlayback()" disabled>■ Stop</button>
+      <button id="btn-next" class="secondary" onclick="nextClip()" disabled>▶▶ Next</button>
+      <span id="clip-status" style="font-size:12px; color:var(--text-dim); margin-left:auto;"></span>
+    </div>
   </div>
 </div>
 
@@ -144,7 +186,6 @@ const SCOPES = 'user-read-private streaming user-modify-playback-state user-read
 let accessToken = null;
 let tracks = [];
 let currentTrackIndex = 0;
-let watchInterval = null;
 
 /* ---------- PKCE auth ---------- */
 function genVerifier(len) {
@@ -246,7 +287,7 @@ async function loadPlaylist() {
     collected = collected.concat((d.items || []).map(i => i.item || i.track).filter(Boolean));
     url = d.next;
   }
-  tracks = collected.map(t => ({ ...t, startMs: 0 }));
+  tracks = collected.map(t => ({ ...t, startMs: 0, lengthSec: 0 }));
   statusEl.textContent = tracks.length + ' tracks loaded.';
   renderTracks();
   document.getElementById('tracks-card').classList.remove('hidden');
@@ -277,6 +318,7 @@ function renderTracks() {
         '<div class="track-meta">' + escapeHtml(t.artists.map(a=>a.name).join(', ')) + ' · ' + msToDisplay(t.duration_ms) + '</div>' +
       '</div>' +
       '<input class="time-input" type="text" placeholder="0:00" id="ts-' + i + '" value="' + (t.startMs ? msToDisplay(t.startMs) : '') + '" />' +
+      '<input class="time-input" type="text" placeholder="—" id="len-' + i + '" value="' + (t.lengthSec || '') + '" />' +
       '<button class="secondary icon" onclick="playFromHere(' + i + ')">▶</button>';
     list.appendChild(div);
   });
@@ -285,7 +327,24 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// highlight the active row; pass -1 to clear all highlights
+function highlightTrack(index) {
+  const rows = document.querySelectorAll('.track-row');
+  rows.forEach((row, i) => row.classList.toggle('playing', i === index));
+  if (index >= 0 && rows[index]) {
+    rows[index].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
 /* ---------- playback ---------- */
+const FADE_MS = 3000;       // total fade duration
+const FADE_STEPS = 12;      // volume increments per fade
+const FULL_VOLUME = 100;    // target volume for a clip
+
+let clipTimer = null;       // fires the auto fade-out at end of clip length
+let fadeBusy = false;       // guards against overlapping fades
+let activeDeviceId = null;
+
 async function getActiveDevice() {
   const res = await fetch('https://api.spotify.com/v1/me/player/devices', { headers: { Authorization: 'Bearer ' + accessToken } });
   const data = await res.json();
@@ -293,48 +352,136 @@ async function getActiveDevice() {
   const active = devices.find(d => d.is_active) || devices[0];
   return active ? active.id : null;
 }
+
+async function setVolume(pct) {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  await fetch('https://api.spotify.com/v1/me/player/volume?volume_percent=' + v +
+    (activeDeviceId ? '&device_id=' + activeDeviceId : ''), {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + accessToken }
+  });
+}
+
+// ramp volume from -> to over FADE_MS; returns when done
+async function fade(from, to) {
+  fadeBusy = true;
+  const stepDelay = FADE_MS / FADE_STEPS;
+  for (let s = 1; s <= FADE_STEPS; s++) {
+    const v = from + (to - from) * (s / FADE_STEPS);
+    await setVolume(v);
+    await new Promise(r => setTimeout(r, stepDelay));
+  }
+  fadeBusy = false;
+}
+
+async function pausePlayback() {
+  await fetch('https://api.spotify.com/v1/me/player/pause' +
+    (activeDeviceId ? '?device_id=' + activeDeviceId : ''), {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + accessToken }
+  });
+}
+
+function parseLengthSec(str) {
+  if (!str || !str.trim()) return 0;
+  const n = parseFloat(str.trim());
+  return isNaN(n) || n <= 0 ? 0 : n;
+}
+
+function setControlsActive(on) {
+  document.getElementById('btn-stop').disabled = !on;
+  document.getElementById('btn-next').disabled = !on;
+}
+
 async function playTrack(index) {
   if (index >= tracks.length) {
-    clearInterval(watchInterval);
     document.getElementById('now-playing').classList.add('hidden');
+    setControlsActive(false);
+    highlightTrack(-1);
+    document.getElementById('clip-status').textContent = 'Reached end of list.';
     return;
   }
+  clearTimeout(clipTimer);
+
   const t = tracks[index];
   const startMs = parseTime(document.getElementById('ts-' + index)?.value || '');
+  const lengthSec = parseLengthSec(document.getElementById('len-' + index)?.value || '');
   tracks[index].startMs = startMs;
-  const deviceId = await getActiveDevice();
-  if (!deviceId) { alert('No Spotify device found. Open Spotify on your phone or desktop, start playing anything briefly, then try again.'); return; }
-  const res = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + deviceId, {
+  tracks[index].lengthSec = lengthSec;
+
+  activeDeviceId = await getActiveDevice();
+  if (!activeDeviceId) { alert('No Spotify device found. Open Spotify on a device, play anything briefly, then try again.'); return; }
+
+  // start silent so the fade-in is clean
+  await setVolume(0);
+  const res = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + activeDeviceId, {
     method: 'PUT',
     headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ uris: [t.uri], position_ms: startMs })
   });
-  if (res.status === 403) { alert('Playback failed — this usually means the account is not Spotify Premium.'); return; }
+  if (res.status === 403) { alert('Playback failed — the account may not be Spotify Premium.'); return; }
+
   currentTrackIndex = index;
+  highlightTrack(index);
   document.getElementById('now-playing').classList.remove('hidden');
   document.getElementById('np-title').textContent = t.name;
-  document.getElementById('np-meta').textContent = t.artists.map(a=>a.name).join(', ');
-  document.getElementById('np-stamp').textContent = startMs > 0 ? 'Started at ' + msToDisplay(startMs) : 'Started from beginning';
-  watchForEnd(t.uri);
+  document.getElementById('np-meta').textContent = t.artists.map(a => a.name).join(', ');
+  document.getElementById('np-stamp').textContent =
+    'Clip from ' + msToDisplay(startMs) + (lengthSec ? ' · ' + lengthSec + 's' : ' · until stopped');
+  setControlsActive(true);
+  document.getElementById('clip-status').textContent = 'Fading in...';
+
+  // fade in
+  await fade(0, FULL_VOLUME);
+  document.getElementById('clip-status').textContent = lengthSec ? 'Playing clip...' : 'Playing (no auto-stop)';
+
+  // schedule the auto fade-out: clip length minus the fade duration,
+  // so the fade finishes right at the end of the requested length
+  if (lengthSec > 0) {
+    const playMs = Math.max(0, lengthSec * 1000 - FADE_MS);
+    clipTimer = setTimeout(() => endClip(true), playMs);
+  }
 }
-function watchForEnd(uri) {
-  clearInterval(watchInterval);
-  watchInterval = setInterval(async () => {
-    const res = await fetch('https://api.spotify.com/v1/me/player', { headers: { Authorization: 'Bearer ' + accessToken } });
-    if (res.status === 204) return;
-    const state = await res.json();
-    if (!state || !state.item) return;
-    if (state.item.uri !== uri) {
-      clearInterval(watchInterval);
-      playTrack(currentTrackIndex + 1);
-    }
-  }, 2000);
+
+// fade out, pause, and optionally advance to the next clip
+async function endClip(advance) {
+  clearTimeout(clipTimer);
+  if (fadeBusy) return; // a fade is already running
+  document.getElementById('clip-status').textContent = 'Fading out...';
+  await fade(FULL_VOLUME, 0);
+  await pausePlayback();
+  await setVolume(FULL_VOLUME); // restore so manual Spotify use isn't left silent
+  if (advance && currentTrackIndex + 1 < tracks.length) {
+    document.getElementById('clip-status').textContent = 'Next clip...';
+    await playTrack(currentTrackIndex + 1);
+  } else {
+    document.getElementById('now-playing').classList.add('hidden');
+    setControlsActive(false);
+    highlightTrack(-1);
+    document.getElementById('clip-status').textContent = advance ? 'Done.' : 'Stopped.';
+  }
 }
+
+async function stopPlayback() {
+  clearTimeout(clipTimer);
+  await endClip(false);
+}
+
+async function nextClip() {
+  clearTimeout(clipTimer);
+  if (currentTrackIndex + 1 >= tracks.length) {
+    await endClip(false);
+    return;
+  }
+  await endClip(true);
+}
+
 async function startPlayback() {
   if (!accessToken) { alert('Connect Spotify first.'); return; }
   if (!tracks.length) { alert('Load a playlist first.'); return; }
   await playTrack(0);
 }
+
 async function playFromHere(i) {
   if (!accessToken) { alert('Connect Spotify first.'); return; }
   await playTrack(i);
