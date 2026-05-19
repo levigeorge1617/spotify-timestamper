@@ -229,7 +229,11 @@ async function loadPlaylist() {
     { headers: { Authorization: 'Bearer ' + accessToken } }
   );
   const data = await head.json();
-  if (data.error) { statusEl.textContent = 'Error: ' + data.error.message; return; }
+  if (!head.ok || data.error || !data.tracks) {
+    const msg = data.error ? (data.error.message + ' (HTTP ' + head.status + ')') : ('HTTP ' + head.status);
+    statusEl.textContent = 'Could not load playlist: ' + msg;
+    return;
+  }
   document.getElementById('playlist-name').textContent = data.name;
   let collected = (data.tracks.items || []).filter(i => i.track).map(i => i.track);
   let next = data.tracks.next;
