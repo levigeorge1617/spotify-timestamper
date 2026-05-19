@@ -101,14 +101,6 @@
   }
   .col-head span { text-align: center; }
   .col-head span:first-child { text-align: left; }
-  .controls {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
-  }
   button.danger { background: #e0245e; color: #fff; }
   button.danger:hover { background: #f0356f; }
   button:disabled { opacity: 0.4; cursor: default; }
@@ -163,18 +155,25 @@
   <div id="tracks-card" class="card hidden">
     <div class="row" style="margin-bottom:12px;">
       <span style="font-size:16px; font-weight:600;" id="playlist-name"></span>
-      <button style="margin-left:auto;" onclick="startPlayback()">▶ Play all</button>
+      <div class="row" style="margin-left:auto;">
+        <button onclick="startPlayback()">▶ Play all</button>
+        <button id="btn-next" class="secondary" onclick="nextClip()" disabled>▶▶ Next</button>
+        <button id="btn-stop" class="danger" onclick="stopPlayback()" disabled>■ Stop</button>
+      </div>
     </div>
     <div class="hint" style="margin-bottom:10px;">Each clip starts at <strong>Start</strong> (mm:ss) and plays for <strong>Length</strong> seconds, then fades out. Leave Length blank to play until you hit Stop or Next. Make sure Spotify is open on a device.</div>
+    <div class="row" style="margin-bottom:12px;">
+      <label for="fade-slider" style="font-size:12px; color:var(--text-dim);">Fade</label>
+      <input type="range" id="fade-slider" min="0" max="5" step="0.5" value="3"
+        oninput="document.getElementById('fade-val').textContent = this.value + 's'"
+        style="flex:1; max-width:240px; accent-color:var(--green);" />
+      <span id="fade-val" style="font-size:12px; color:var(--green); width:34px;">3s</span>
+    </div>
     <div class="col-head">
       <span>Track</span><span>Start</span><span>Length (s)</span><span></span>
     </div>
     <div id="track-list"></div>
-    <div class="controls">
-      <button id="btn-stop" class="danger" onclick="stopPlayback()" disabled>■ Stop</button>
-      <button id="btn-next" class="secondary" onclick="nextClip()" disabled>▶▶ Next</button>
-      <span id="clip-status" style="font-size:12px; color:var(--text-dim); margin-left:auto;"></span>
-    </div>
+    <div id="clip-status" style="font-size:12px; color:var(--text-dim); margin-top:12px; padding-top:12px; border-top:1px solid var(--border); min-height:16px;"></div>
   </div>
 </div>
 
@@ -337,9 +336,14 @@ function highlightTrack(index) {
 }
 
 /* ---------- playback ---------- */
-const FADE_MS = 3000;       // total fade duration
 const FADE_STEPS = 12;      // volume increments per fade
 const FULL_VOLUME = 100;    // target volume for a clip
+
+// current fade duration in ms, read live from the slider
+function fadeMs() {
+  const el = document.getElementById('fade-slider');
+  return el ? parseFloat(el.value) * 1000 : 3000;
+}
 
 let clipTimer = null;       // fires the auto fade-out at end of clip length
 let fadeBusy = false;       // guards against overlapping fades
@@ -362,10 +366,17 @@ async function setVolume(pct) {
   });
 }
 
-// ramp volume from -> to over FADE_MS; returns when done
+// ramp volume from -> to over the current fade duration; returns when done
 async function fade(from, to) {
   fadeBusy = true;
-  const stepDelay = FADE_MS / FADE_STEPS;
+  const dur = fadeMs();
+  if (dur <= 0) {
+    // instant cut, no ramp
+    await setVolume(to);
+    fadeBusy = false;
+    return;
+  }
+  const stepDelay = dur / FADE_STEPS;
   for (let s = 1; s <= FADE_STEPS; s++) {
     const v = from + (to - from) * (s / FADE_STEPS);
     await setVolume(v);
@@ -438,7 +449,7 @@ async function playTrack(index) {
   // schedule the auto fade-out: clip length minus the fade duration,
   // so the fade finishes right at the end of the requested length
   if (lengthSec > 0) {
-    const playMs = Math.max(0, lengthSec * 1000 - FADE_MS);
+    const playMs = Math.max(0, lengthSec * 1000 - fadeMs());
     clipTimer = setTimeout(() => endClip(true), playMs);
   }
 }
