@@ -139,7 +139,7 @@
 <script>
 const CLIENT_ID = '0c4a2afadb1a4556b995ec2be8bed6bd';
 const REDIRECT_URI = 'https://spotify.it-ohio.net/';
-const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state playlist-read-private playlist-read-collaborative';
+const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
 
 let accessToken = null;
 let tracks = [];
@@ -224,14 +224,18 @@ async function loadPlaylist() {
   const statusEl = document.getElementById('playlist-status');
   if (!id) { statusEl.textContent = 'Could not find a playlist ID in that URL.'; return; }
   statusEl.textContent = 'Loading...';
-  let collected = [];
-  let url = `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`;
-  // get the playlist name separately
+  // playlist name (metadata only)
   const metaRes = await fetch(`https://api.spotify.com/v1/playlists/${id}?fields=name`,
     { headers: { Authorization: 'Bearer ' + accessToken } });
   const meta = await metaRes.json();
+  if (!metaRes.ok || meta.error) {
+    statusEl.textContent = 'Could not load playlist: ' + (meta.error ? meta.error.message : 'HTTP ' + metaRes.status);
+    return;
+  }
   document.getElementById('playlist-name').textContent = meta.name || 'Playlist';
-  // page through all tracks
+  // tracks via the post-Feb-2026 /items endpoint; response uses items[].item, not items[].track
+  let collected = [];
+  let url = `https://api.spotify.com/v1/playlists/${id}/items?limit=100`;
   while (url) {
     const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
     const d = await r.json();
@@ -239,7 +243,7 @@ async function loadPlaylist() {
       statusEl.textContent = 'Could not load tracks: ' + (d.error ? d.error.message : 'HTTP ' + r.status);
       return;
     }
-    collected = collected.concat((d.items || []).filter(i => i.track).map(i => i.track));
+    collected = collected.concat((d.items || []).map(i => i.item || i.track).filter(Boolean));
     url = d.next;
   }
   tracks = collected.map(t => ({ ...t, startMs: 0 }));
