@@ -139,7 +139,7 @@
 <script>
 const CLIENT_ID = '0c4a2afadb1a4556b995ec2be8bed6bd';
 const REDIRECT_URI = 'https://spotify.it-ohio.net/';
-const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
+const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state playlist-read-private playlist-read-collaborative';
 
 let accessToken = null;
 let tracks = [];
@@ -224,24 +224,23 @@ async function loadPlaylist() {
   const statusEl = document.getElementById('playlist-status');
   if (!id) { statusEl.textContent = 'Could not find a playlist ID in that URL.'; return; }
   statusEl.textContent = 'Loading...';
-  const head = await fetch(
-    `https://api.spotify.com/v1/playlists/${id}?fields=name,tracks(items(track(id,name,artists,duration_ms,uri)),next)`,
-    { headers: { Authorization: 'Bearer ' + accessToken } }
-  );
-  const data = await head.json();
-  if (!head.ok || data.error || !data.tracks) {
-    const msg = data.error ? (data.error.message + ' (HTTP ' + head.status + ')') : ('HTTP ' + head.status);
-    statusEl.textContent = 'Could not load playlist: ' + msg;
-    return;
-  }
-  document.getElementById('playlist-name').textContent = data.name;
-  let collected = (data.tracks.items || []).filter(i => i.track).map(i => i.track);
-  let next = data.tracks.next;
-  while (next) {
-    const r = await fetch(next, { headers: { Authorization: 'Bearer ' + accessToken } });
+  let collected = [];
+  let url = `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`;
+  // get the playlist name separately
+  const metaRes = await fetch(`https://api.spotify.com/v1/playlists/${id}?fields=name`,
+    { headers: { Authorization: 'Bearer ' + accessToken } });
+  const meta = await metaRes.json();
+  document.getElementById('playlist-name').textContent = meta.name || 'Playlist';
+  // page through all tracks
+  while (url) {
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken } });
     const d = await r.json();
+    if (!r.ok || d.error) {
+      statusEl.textContent = 'Could not load tracks: ' + (d.error ? d.error.message : 'HTTP ' + r.status);
+      return;
+    }
     collected = collected.concat((d.items || []).filter(i => i.track).map(i => i.track));
-    next = d.next;
+    url = d.next;
   }
   tracks = collected.map(t => ({ ...t, startMs: 0 }));
   statusEl.textContent = tracks.length + ' tracks loaded.';
