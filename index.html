@@ -228,7 +228,7 @@
 <script>
 const CLIENT_ID = '0c4a2afadb1a4556b995ec2be8bed6bd';
 const REDIRECT_URI = 'https://spotify.it-ohio.net/';
-const SCOPES = 'user-read-private user-read-email streaming user-modify-playback-state user-read-playback-state playlist-read-private playlist-read-collaborative user-library-read';
+const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
 
 let accessToken = null;
 let tracks = [];
@@ -361,7 +361,7 @@ async function fetchMyPlaylists() {
     collected = collected.concat((d.items || []).map(p => ({
       id: p.id,
       name: p.name,
-      count: p.tracks ? p.tracks.total : 0
+      count: (p.items && p.items.total) || (p.tracks && p.tracks.total) || 0
     })));
     url = d.next;
   }
