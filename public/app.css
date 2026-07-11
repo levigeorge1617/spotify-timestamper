@@ -85,6 +85,14 @@ button:disabled { opacity: 0.4; cursor: default; }
 .np .np-src { font-size: 12px; color: var(--green); margin-top: 4px; }
 .empty { color: var(--text-dim); font-size: 13px; padding: 8px 0; }
 
+.scroll-list { max-height: 340px; overflow-y: auto; }
+.drag-handle {
+  cursor: grab; color: var(--text-dim); font-size: 16px; line-height: 1;
+  padding: 0 4px; flex-shrink: 0; user-select: none;
+}
+.drag-handle:active { cursor: grabbing; }
+.track[draggable="true"] { user-select: none; }
+
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
   background: var(--card); border: 1px solid var(--green); color: var(--text);

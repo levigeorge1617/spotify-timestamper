@@ -190,17 +190,39 @@ async function playLoop(){
   await playTrack(track);
 }
 
+// Poll until Spotify reports the given track is actually the one playing.
+// Prevents fading in over the tail of the previous song during play-command latency.
+async function waitForTrack(uri, timeoutMs){
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs){
+    try {
+      const r = await spFetch('https://api.spotify.com/v1/me/player');
+      if (r.status === 200){
+        const d = await r.json();
+        if (d && d.item && d.item.uri === uri && d.is_playing) return true;
+      }
+    } catch (_) {}
+    await new Promise(res => setTimeout(res, 200));
+  }
+  return false;
+}
+
 async function playTrack(track){
   deviceId = document.getElementById('device').value;
   if (!deviceId){ setStatus('No output device selected.'); playing=false; return; }
   showNP(track);
-  setStatus('Fading in...');
+  setStatus('Loading...');
   await setVolume(0);
   const res = await spFetch('https://api.spotify.com/v1/me/player/play?device_id='+deviceId, {
     method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uris:[track.uri] })
   });
   if (res.status === 403){ setStatus('Playback failed — account may not be Premium.'); playing=false; setButtons(); return; }
   if (res.status === 404){ setStatus('Device not found. Refresh devices and try again.'); playing=false; setButtons(); return; }
+  if (!playing) return; // stopped while the play request was in flight
+  // wait for the new track to truly be playing (at volume 0) before ramping up
+  await waitForTrack(track.uri, 3000);
+  if (!playing) return;
+  setStatus('Fading in...');
   await fade(0, 100);
   setStatus('Playing.');
   clearTimeout(advanceTimer);

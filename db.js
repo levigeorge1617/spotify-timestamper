@@ -42,6 +42,10 @@ async function init() {
       value JSONB
     )`);
 
+  // migrations for existing databases (no-op if already applied)
+  await pool.query('ALTER TABLE queue_items ADD COLUMN IF NOT EXISTS requester_id TEXT');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_requester ON queue_items(requester_id, status)');
+
   // seed defaults (no-op if already present)
   await pool.query("INSERT INTO settings(key,value) VALUES('approval_mode','\"strict\"'::jsonb) ON CONFLICT (key) DO NOTHING");
   await pool.query("INSERT INTO settings(key,value) VALUES('default_index','0'::jsonb) ON CONFLICT (key) DO NOTHING");

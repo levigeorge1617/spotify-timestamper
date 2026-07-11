@@ -47,12 +47,13 @@
         <div class="label" style="margin:0;">Pending approval</div>
         <span class="badge dim" id="pending-count">0</span>
       </div>
-      <div id="pending" style="margin-top:10px;"></div>
+      <div id="pending" class="scroll-list" style="margin-top:10px;"></div>
     </div>
 
     <div class="card">
       <div class="label">Up Next (approved)</div>
-      <div id="upnext"></div>
+      <div class="hint" style="margin-top:0;">Drag the <span style="color:var(--text)">☰</span> handle to reorder.</div>
+      <div id="upnext" class="scroll-list"></div>
     </div>
 
     <div class="card">
@@ -103,7 +104,10 @@ if (PIN) { api('/api/admin/login',{method:'POST'}).then(r=>{ if(r.ok) showApp();
 
 function cmd(type){ api('/api/admin/'+type, { method:'POST' }); }
 
+let _dragging = false, _pendingState = null, lastState = null;
 function renderState(s){
+  if (_dragging) { _pendingState = s; return; } // don't redraw mid-drag
+  lastState = s;
   const np = s.nowPlaying;
   document.getElementById('np-img').src = np ? (np.albumArt||'') : '';
   document.getElementById('np-name').textContent = np ? np.name : 'Nothing playing';
@@ -129,13 +133,12 @@ function renderState(s){
   const up = s.upNext || [];
   window._up = up;
   document.getElementById('upnext').innerHTML = up.length ? up.map((t,i) =>
-    '<div class="track">' +
+    '<div class="track" draggable="true" data-idx="'+i+'" ondragstart="dragStart(event,'+i+')" ondragover="dragOver(event)" ondrop="dragDrop(event,'+i+')" ondragend="dragEnd(event)">' +
+      '<span class="drag-handle" title="Drag to reorder">☰</span>' +
       '<img src="'+esc(t.album_art)+'" alt="" />' +
       '<div class="info"><div class="t-name">'+esc(t.name)+'</div>' +
       '<div class="t-meta">'+esc(t.artist)+(t.requested_by?' · '+esc(t.requested_by):'')+'</div></div>' +
       '<div class="actions">' +
-        '<button class="secondary icon" onclick="move('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>' +
-        '<button class="secondary icon" onclick="move('+i+',1)" '+(i===up.length-1?'disabled':'')+'>↓</button>' +
         '<button class="secondary icon" onclick="remove('+t.id+')">✕</button>' +
       '</div>' +
     '</div>'
@@ -145,11 +148,31 @@ function renderState(s){
 function approve(id){ api('/api/admin/approve/'+id,{method:'POST'}); }
 function reject(id){ api('/api/admin/reject/'+id,{method:'POST'}); }
 function remove(id){ api('/api/admin/item/'+id,{method:'DELETE'}); }
-function move(i, dir){
+let _dragFrom = null;
+function dragStart(e, i){
+  _dragFrom = i; _dragging = true;
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', String(i)); } catch (_) {}
+  e.currentTarget.style.opacity = '0.4';
+}
+function dragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+function dragDrop(e, to){
+  e.preventDefault();
+  const from = _dragFrom;
+  if (from === null || from === to) return;
   const up = window._up.slice();
-  const j = i + dir; if (j<0||j>=up.length) return;
-  const tmp = up[i]; up[i]=up[j]; up[j]=tmp;
-  api('/api/admin/reorder',{ method:'POST', body: JSON.stringify({ ids: up.map(t=>t.id) }) });
+  const [moved] = up.splice(from, 1);
+  up.splice(to, 0, moved);
+  window._up = up;
+  // optimistic redraw so it feels instant; server echo will confirm
+  _dragging = false; _pendingState = null;
+  if (lastState) renderState(Object.assign({}, lastState, { upNext: up }));
+  api('/api/admin/reorder', { method: 'POST', body: JSON.stringify({ ids: up.map(t => t.id) }) });
+}
+function dragEnd(e){
+  e.currentTarget.style.opacity = '';
+  _dragFrom = null; _dragging = false;
+  if (_pendingState) { const s = _pendingState; _pendingState = null; renderState(s); }
 }
 function saveMode(){
   api('/api/admin/settings',{ method:'POST', body: JSON.stringify({ approvalMode: document.getElementById('mode').value }) });
