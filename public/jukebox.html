@@ -33,6 +33,7 @@
     <div class="row">
       <input type="search" id="q" placeholder="Song or artist..." style="flex:1;" />
       <button onclick="doSearch()">Search</button>
+      <button class="secondary" onclick="clearSearch()">Clear</button>
     </div>
     <div id="results" style="margin-top:12px;"></div>
     <div class="hint" id="search-hint"></div>
@@ -58,6 +59,24 @@ function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 const nickEl = document.getElementById('nickname');
 nickEl.value = localStorage.getItem('jukebox_nick') || '';
 nickEl.addEventListener('input', () => localStorage.setItem('jukebox_nick', nickEl.value));
+
+// Stable per-browser id so the request cap can't be dodged by changing your name.
+function getRequesterId() {
+  let id = localStorage.getItem('jukebox_rid');
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+    localStorage.setItem('jukebox_rid', id);
+  }
+  return id;
+}
+
+function clearSearch() {
+  document.getElementById('q').value = '';
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('search-hint').textContent = '';
+  window._results = [];
+  document.getElementById('q').focus();
+}
 
 async function doSearch() {
   const q = document.getElementById('q').value.trim();
@@ -91,10 +110,10 @@ async function request(i) {
   const r = await fetch('/api/request', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...t, requestedBy }),
+    body: JSON.stringify({ ...t, requestedBy, requesterId: getRequesterId() }),
   });
-  const d = await r.json();
-  if (d.error) { toast(d.error); return; }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) { toast(d.error || 'Could not add that song.'); return; }
   toast(d.status === 'approved' ? 'Added to the queue!' : 'Requested — waiting for approval');
 }
 
@@ -113,13 +132,16 @@ function renderState(s) {
   }
   const box = document.getElementById('upnext');
   if (!s.upNext || !s.upNext.length) { box.innerHTML = '<div class="empty">Nothing queued yet — be the first!</div>'; return; }
-  box.innerHTML = s.upNext.map(t =>
+  let html = s.upNext.map(t =>
     '<div class="track">' +
       '<img src="' + esc(t.album_art) + '" alt="" />' +
       '<div class="info"><div class="t-name">' + esc(t.name) + '</div>' +
       '<div class="t-meta">' + esc(t.artist) + (t.requested_by ? ' · ' + esc(t.requested_by) : '') + '</div></div>' +
     '</div>'
   ).join('');
+  const more = (s.upNextTotal || s.upNext.length) - s.upNext.length;
+  if (more > 0) html += '<div class="empty">+ ' + more + ' more waiting…</div>';
+  box.innerHTML = html;
 }
 
 function connect() {

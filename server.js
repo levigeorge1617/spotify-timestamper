@@ -9,6 +9,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const ADMIN_PIN = process.env.ADMIN_PIN || '';
 
+// How many songs one person can have waiting (pending + approved + playing) at once.
+// A slot frees up as soon as one of their songs plays or is rejected.
+const MAX_ACTIVE_REQUESTS = 3;
+
+// How many upcoming songs the guest view shows.
+const GUEST_UPNEXT_LIMIT = 10;
+
 /* ---------------- settings helpers ---------------- */
 async function getSetting(key, def) {
   const r = await pool.query('SELECT value FROM settings WHERE key=$1', [key]);
@@ -40,9 +47,11 @@ function sseInit(res) {
 async function getPublicState() {
   const nowPlaying = await getSetting('now_playing', null);
   const upNext = (await pool.query(
-    "SELECT id,name,artist,album_art,requested_by FROM queue_items WHERE status='approved' ORDER BY position ASC"
+    "SELECT id,name,artist,album_art,requested_by FROM queue_items WHERE status='approved' ORDER BY position ASC LIMIT $1",
+    [GUEST_UPNEXT_LIMIT]
   )).rows;
-  return { nowPlaying, upNext };
+  const total = (await pool.query("SELECT COUNT(*)::int c FROM queue_items WHERE status='approved'")).rows[0].c;
+  return { nowPlaying, upNext, upNextTotal: total };
 }
 async function getAdminState() {
   const nowPlaying = await getSetting('now_playing', null);
@@ -93,6 +102,21 @@ app.post('/api/request', async (req, res) => {
   const b = req.body || {};
   if (!b.uri || !/^spotify:track:/.test(b.uri)) return res.status(400).json({ error: 'Invalid track' });
   const requestedBy = (b.requestedBy || 'Anonymous').toString().trim().slice(0, 40) || 'Anonymous';
+  const requesterId = (b.requesterId || '').toString().slice(0, 64);
+
+  // Per-person cap: count this requester's songs still in play (pending/approved/playing).
+  if (requesterId) {
+    const c = (await pool.query(
+      "SELECT COUNT(*)::int n FROM queue_items WHERE requester_id=$1 AND status IN ('pending','approved','playing')",
+      [requesterId]
+    )).rows[0].n;
+    if (c >= MAX_ACTIVE_REQUESTS) {
+      return res.status(429).json({
+        error: `You already have ${MAX_ACTIVE_REQUESTS} songs in the queue. Wait for one to play before adding another.`,
+      });
+    }
+  }
+
   const mode = await getSetting('approval_mode', 'strict');
   const status = mode === 'auto' ? 'approved' : 'pending';
   let position = null;
@@ -101,10 +125,10 @@ app.post('/api/request', async (req, res) => {
     position = m.rows[0].p;
   }
   await pool.query(
-    `INSERT INTO queue_items(uri,name,artist,album_art,duration_ms,requested_by,status,position,approved_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    `INSERT INTO queue_items(uri,name,artist,album_art,duration_ms,requested_by,requester_id,status,position,approved_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [b.uri, (b.name || '').slice(0, 200), (b.artist || '').slice(0, 200), b.albumArt || '',
-     b.durationMs || 0, requestedBy, status, position, status === 'approved' ? new Date() : null]
+     b.durationMs || 0, requestedBy, requesterId || null, status, position, status === 'approved' ? new Date() : null]
   );
   await broadcast();
   res.json({ status });

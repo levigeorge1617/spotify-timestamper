@@ -47,12 +47,13 @@
         <div class="label" style="margin:0;">Pending approval</div>
         <span class="badge dim" id="pending-count">0</span>
       </div>
-      <div id="pending" style="margin-top:10px;"></div>
+      <div id="pending" class="scroll-list" style="margin-top:10px;"></div>
     </div>
 
     <div class="card">
       <div class="label">Up Next (approved)</div>
-      <div id="upnext"></div>
+      <div class="hint" style="margin-top:0;">Drag the <span style="color:var(--text)">☰</span> handle to reorder.</div>
+      <div id="upnext" class="scroll-list"></div>
     </div>
 
     <div class="card">
@@ -103,7 +104,10 @@ if (PIN) { api('/api/admin/login',{method:'POST'}).then(r=>{ if(r.ok) showApp();
 
 function cmd(type){ api('/api/admin/'+type, { method:'POST' }); }
 
+let _dragging = false, _pendingState = null, lastState = null;
 function renderState(s){
+  if (_dragging) { _pendingState = s; return; } // don't redraw mid-drag
+  lastState = s;
   const np = s.nowPlaying;
   document.getElementById('np-img').src = np ? (np.albumArt||'') : '';
   document.getElementById('np-name').textContent = np ? np.name : 'Nothing playing';
@@ -129,13 +133,12 @@ function renderState(s){
   const up = s.upNext || [];
   window._up = up;
   document.getElementById('upnext').innerHTML = up.length ? up.map((t,i) =>
-    '<div class="track">' +
+    '<div class="track" data-id="'+t.id+'">' +
+      '<span class="drag-handle" title="Drag to reorder" onpointerdown="dragStart(event)">☰</span>' +
       '<img src="'+esc(t.album_art)+'" alt="" />' +
       '<div class="info"><div class="t-name">'+esc(t.name)+'</div>' +
       '<div class="t-meta">'+esc(t.artist)+(t.requested_by?' · '+esc(t.requested_by):'')+'</div></div>' +
       '<div class="actions">' +
-        '<button class="secondary icon" onclick="move('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>' +
-        '<button class="secondary icon" onclick="move('+i+',1)" '+(i===up.length-1?'disabled':'')+'>↓</button>' +
         '<button class="secondary icon" onclick="remove('+t.id+')">✕</button>' +
       '</div>' +
     '</div>'
@@ -145,11 +148,53 @@ function renderState(s){
 function approve(id){ api('/api/admin/approve/'+id,{method:'POST'}); }
 function reject(id){ api('/api/admin/reject/'+id,{method:'POST'}); }
 function remove(id){ api('/api/admin/item/'+id,{method:'DELETE'}); }
-function move(i, dir){
-  const up = window._up.slice();
-  const j = i + dir; if (j<0||j>=up.length) return;
-  const tmp = up[i]; up[i]=up[j]; up[j]=tmp;
-  api('/api/admin/reorder',{ method:'POST', body: JSON.stringify({ ids: up.map(t=>t.id) }) });
+// Pointer-based drag so it works with touch (phone) and mouse alike.
+let drag = null, lastY = 0, autoRAF = null;
+
+function reposition(y){
+  const list = drag.list;
+  const siblings = Array.from(list.querySelectorAll('.track:not(.dragging)'));
+  const next = siblings.find(s => { const r = s.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  if (next) list.insertBefore(drag.row, next); else list.appendChild(drag.row);
+}
+function autoScroll(){
+  if (!drag) { autoRAF = null; return; }
+  const cr = drag.list.getBoundingClientRect();
+  if (lastY < cr.top + 28 && drag.list.scrollTop > 0) { drag.list.scrollTop -= 6; reposition(lastY); }
+  else if (lastY > cr.bottom - 28) { drag.list.scrollTop += 6; reposition(lastY); }
+  autoRAF = requestAnimationFrame(autoScroll);
+}
+function dragStart(e){
+  const handle = e.currentTarget;
+  const row = handle.closest('.track');
+  if (!row) return;
+  _dragging = true;
+  drag = { row, list: document.getElementById('upnext') };
+  lastY = e.clientY;
+  row.classList.add('dragging');
+  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+  handle.addEventListener('pointermove', dragMove);
+  handle.addEventListener('pointerup', dragEnd);
+  handle.addEventListener('pointercancel', dragEnd);
+  autoRAF = requestAnimationFrame(autoScroll);
+  e.preventDefault();
+}
+function dragMove(e){ if (!drag) return; e.preventDefault(); lastY = e.clientY; reposition(lastY); }
+function dragEnd(e){
+  if (!drag) return;
+  const handle = e.currentTarget;
+  try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+  handle.removeEventListener('pointermove', dragMove);
+  handle.removeEventListener('pointerup', dragEnd);
+  handle.removeEventListener('pointercancel', dragEnd);
+  drag.row.classList.remove('dragging');
+  const ids = Array.from(drag.list.querySelectorAll('.track')).map(el => parseInt(el.dataset.id));
+  const byId = {}; (window._up || []).forEach(t => byId[t.id] = t);
+  window._up = ids.map(id => byId[id]).filter(Boolean);
+  drag = null; _dragging = false;
+  if (autoRAF) { cancelAnimationFrame(autoRAF); autoRAF = null; }
+  api('/api/admin/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
+  if (_pendingState) { _pendingState.upNext = window._up; const s = _pendingState; _pendingState = null; renderState(s); }
 }
 function saveMode(){
   api('/api/admin/settings',{ method:'POST', body: JSON.stringify({ approvalMode: document.getElementById('mode').value }) });
