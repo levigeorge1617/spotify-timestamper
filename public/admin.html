@@ -133,8 +133,8 @@ function renderState(s){
   const up = s.upNext || [];
   window._up = up;
   document.getElementById('upnext').innerHTML = up.length ? up.map((t,i) =>
-    '<div class="track" draggable="true" data-idx="'+i+'" ondragstart="dragStart(event,'+i+')" ondragover="dragOver(event)" ondrop="dragDrop(event,'+i+')" ondragend="dragEnd(event)">' +
-      '<span class="drag-handle" title="Drag to reorder">☰</span>' +
+    '<div class="track" data-id="'+t.id+'">' +
+      '<span class="drag-handle" title="Drag to reorder" onpointerdown="dragStart(event)">☰</span>' +
       '<img src="'+esc(t.album_art)+'" alt="" />' +
       '<div class="info"><div class="t-name">'+esc(t.name)+'</div>' +
       '<div class="t-meta">'+esc(t.artist)+(t.requested_by?' · '+esc(t.requested_by):'')+'</div></div>' +
@@ -148,31 +148,53 @@ function renderState(s){
 function approve(id){ api('/api/admin/approve/'+id,{method:'POST'}); }
 function reject(id){ api('/api/admin/reject/'+id,{method:'POST'}); }
 function remove(id){ api('/api/admin/item/'+id,{method:'DELETE'}); }
-let _dragFrom = null;
-function dragStart(e, i){
-  _dragFrom = i; _dragging = true;
-  e.dataTransfer.effectAllowed = 'move';
-  try { e.dataTransfer.setData('text/plain', String(i)); } catch (_) {}
-  e.currentTarget.style.opacity = '0.4';
+// Pointer-based drag so it works with touch (phone) and mouse alike.
+let drag = null, lastY = 0, autoRAF = null;
+
+function reposition(y){
+  const list = drag.list;
+  const siblings = Array.from(list.querySelectorAll('.track:not(.dragging)'));
+  const next = siblings.find(s => { const r = s.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  if (next) list.insertBefore(drag.row, next); else list.appendChild(drag.row);
 }
-function dragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
-function dragDrop(e, to){
+function autoScroll(){
+  if (!drag) { autoRAF = null; return; }
+  const cr = drag.list.getBoundingClientRect();
+  if (lastY < cr.top + 28 && drag.list.scrollTop > 0) { drag.list.scrollTop -= 6; reposition(lastY); }
+  else if (lastY > cr.bottom - 28) { drag.list.scrollTop += 6; reposition(lastY); }
+  autoRAF = requestAnimationFrame(autoScroll);
+}
+function dragStart(e){
+  const handle = e.currentTarget;
+  const row = handle.closest('.track');
+  if (!row) return;
+  _dragging = true;
+  drag = { row, list: document.getElementById('upnext') };
+  lastY = e.clientY;
+  row.classList.add('dragging');
+  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+  handle.addEventListener('pointermove', dragMove);
+  handle.addEventListener('pointerup', dragEnd);
+  handle.addEventListener('pointercancel', dragEnd);
+  autoRAF = requestAnimationFrame(autoScroll);
   e.preventDefault();
-  const from = _dragFrom;
-  if (from === null || from === to) return;
-  const up = window._up.slice();
-  const [moved] = up.splice(from, 1);
-  up.splice(to, 0, moved);
-  window._up = up;
-  // optimistic redraw so it feels instant; server echo will confirm
-  _dragging = false; _pendingState = null;
-  if (lastState) renderState(Object.assign({}, lastState, { upNext: up }));
-  api('/api/admin/reorder', { method: 'POST', body: JSON.stringify({ ids: up.map(t => t.id) }) });
 }
+function dragMove(e){ if (!drag) return; e.preventDefault(); lastY = e.clientY; reposition(lastY); }
 function dragEnd(e){
-  e.currentTarget.style.opacity = '';
-  _dragFrom = null; _dragging = false;
-  if (_pendingState) { const s = _pendingState; _pendingState = null; renderState(s); }
+  if (!drag) return;
+  const handle = e.currentTarget;
+  try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+  handle.removeEventListener('pointermove', dragMove);
+  handle.removeEventListener('pointerup', dragEnd);
+  handle.removeEventListener('pointercancel', dragEnd);
+  drag.row.classList.remove('dragging');
+  const ids = Array.from(drag.list.querySelectorAll('.track')).map(el => parseInt(el.dataset.id));
+  const byId = {}; (window._up || []).forEach(t => byId[t.id] = t);
+  window._up = ids.map(id => byId[id]).filter(Boolean);
+  drag = null; _dragging = false;
+  if (autoRAF) { cancelAnimationFrame(autoRAF); autoRAF = null; }
+  api('/api/admin/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
+  if (_pendingState) { _pendingState.upNext = window._up; const s = _pendingState; _pendingState = null; renderState(s); }
 }
 function saveMode(){
   api('/api/admin/settings',{ method:'POST', body: JSON.stringify({ approvalMode: document.getElementById('mode').value }) });

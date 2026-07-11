@@ -87,11 +87,15 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 .scroll-list { max-height: 340px; overflow-y: auto; }
 .drag-handle {
-  cursor: grab; color: var(--text-dim); font-size: 16px; line-height: 1;
-  padding: 0 4px; flex-shrink: 0; user-select: none;
+  cursor: grab; color: var(--text-dim); font-size: 18px; line-height: 1;
+  padding: 6px 8px; margin: -6px 0; flex-shrink: 0; user-select: none;
+  touch-action: none; /* let us handle the drag gesture instead of scrolling */
 }
 .drag-handle:active { cursor: grabbing; }
-.track[draggable="true"] { user-select: none; }
+.track.dragging {
+  opacity: 0.6; background: rgba(29,185,84,0.10); border-radius: 6px;
+  user-select: none;
+}
 
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
