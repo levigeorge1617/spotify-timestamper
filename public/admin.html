@@ -58,7 +58,11 @@
 
     <div class="card">
       <div class="label">Settings</div>
-      <div class="row">
+      <div class="row" style="justify-content:space-between;">
+        <span style="font-size:13px;">Requests are <strong id="queue-state">—</strong></span>
+        <button id="queue-toggle" onclick="toggleQueue()">Close queue</button>
+      </div>
+      <div class="row" style="margin-top:14px;">
         <span style="font-size:13px;">Approval mode</span>
         <select id="mode" onchange="saveMode()">
           <option value="strict">Strict — I approve every song</option>
@@ -115,6 +119,15 @@ function renderState(s){
   document.getElementById('np-src').textContent = np ? (np.source==='queue' ? (np.requestedBy?'Requested by '+np.requestedBy:'From the queue') : 'House playlist') : '';
 
   document.getElementById('mode').value = s.approvalMode || 'strict';
+
+  const open = s.queueOpen !== false;
+  window._queueOpen = open;
+  const qs = document.getElementById('queue-state');
+  qs.textContent = open ? 'OPEN' : 'CLOSED';
+  qs.style.color = open ? 'var(--green)' : 'var(--danger)';
+  const qt = document.getElementById('queue-toggle');
+  qt.textContent = open ? 'Close queue' : 'Open queue';
+  qt.className = open ? 'danger' : '';
 
   const pend = s.pending || [];
   document.getElementById('pending-count').textContent = pend.length;
@@ -223,6 +236,9 @@ function dragEnd(){
   drag = null; _dragging = false;
   if (changed) api('/api/admin/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
   if (_pendingState) { _pendingState.upNext = window._up; const s = _pendingState; _pendingState = null; renderState(s); }
+}
+function toggleQueue(){
+  api('/api/admin/settings', { method:'POST', body: JSON.stringify({ queueOpen: !window._queueOpen }) });
 }
 function saveMode(){
   api('/api/admin/settings',{ method:'POST', body: JSON.stringify({ approvalMode: document.getElementById('mode').value }) });

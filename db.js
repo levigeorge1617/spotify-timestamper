@@ -49,6 +49,7 @@ async function init() {
   // seed defaults (no-op if already present)
   await pool.query("INSERT INTO settings(key,value) VALUES('approval_mode','\"strict\"'::jsonb) ON CONFLICT (key) DO NOTHING");
   await pool.query("INSERT INTO settings(key,value) VALUES('default_index','0'::jsonb) ON CONFLICT (key) DO NOTHING");
+  await pool.query("INSERT INTO settings(key,value) VALUES('queue_open','true'::jsonb) ON CONFLICT (key) DO NOTHING");
 }
 
 module.exports = { pool, init };

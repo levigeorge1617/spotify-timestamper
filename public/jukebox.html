@@ -11,6 +11,10 @@
   <h1>🎵 Jukebox</h1>
   <p class="sub">Search for a song and add it to the queue. Requests are approved before they play.</p>
 
+  <div id="closed-banner" class="card hidden" style="border-color:var(--danger); text-align:center;">
+    <strong>🔒 Requests are closed right now.</strong>
+  </div>
+
   <div id="now-playing" class="card hidden">
     <div class="label">Now Playing</div>
     <div class="np">
@@ -104,6 +108,7 @@ async function doSearch() {
 document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 
 async function request(i) {
+  if (window._queueOpen === false) { toast('Requests are closed right now.'); return; }
   const t = window._results[i];
   const requestedBy = nickEl.value.trim();
   if (!requestedBy) { toast('Enter your name first'); nickEl.focus(); return; }
@@ -118,6 +123,8 @@ async function request(i) {
 }
 
 function renderState(s) {
+  window._queueOpen = s.queueOpen !== false;
+  document.getElementById('closed-banner').classList.toggle('hidden', window._queueOpen);
   const np = s.nowPlaying;
   const npCard = document.getElementById('now-playing');
   if (np) {

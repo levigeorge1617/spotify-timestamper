@@ -52,7 +52,8 @@ async function getPublicState() {
     [GUEST_UPNEXT_LIMIT]
   )).rows;
   const total = (await pool.query("SELECT COUNT(*)::int c FROM queue_items WHERE status='approved'")).rows[0].c;
-  return { nowPlaying, upNext, upNextTotal: total };
+  const queueOpen = await getSetting('queue_open', true);
+  return { nowPlaying, upNext, upNextTotal: total, queueOpen };
 }
 async function getAdminState() {
   const nowPlaying = await getSetting('now_playing', null);
@@ -63,7 +64,8 @@ async function getAdminState() {
     "SELECT id,uri,name,artist,album_art,requested_by,duration_ms,created_at FROM queue_items WHERE status='pending' ORDER BY created_at ASC"
   )).rows;
   const approvalMode = await getSetting('approval_mode', 'strict');
-  return { nowPlaying, upNext, pending, approvalMode };
+  const queueOpen = await getSetting('queue_open', true);
+  return { nowPlaying, upNext, pending, approvalMode, queueOpen };
 }
 async function broadcast() {
   try {
@@ -101,6 +103,9 @@ app.get('/api/search', async (req, res) => {
 
 app.post('/api/request', async (req, res) => {
   const b = req.body || {};
+  if (!(await getSetting('queue_open', true))) {
+    return res.status(403).json({ error: 'The queue is closed right now — no new requests.' });
+  }
   if (!b.uri || !/^spotify:track:/.test(b.uri)) return res.status(400).json({ error: 'Invalid track' });
   const requestedBy = (b.requestedBy || 'Anonymous').toString().trim().slice(0, 40) || 'Anonymous';
   if (containsProfanity(requestedBy)) {
@@ -189,6 +194,7 @@ app.post('/api/admin/reorder', requireAdmin, async (req, res) => {
 app.post('/api/admin/settings', requireAdmin, async (req, res) => {
   const mode = req.body && req.body.approvalMode;
   if (mode === 'strict' || mode === 'auto') await setSetting('approval_mode', mode);
+  if (req.body && typeof req.body.queueOpen === 'boolean') await setSetting('queue_open', req.body.queueOpen);
   await broadcast();
   res.json({ ok: true });
 });
