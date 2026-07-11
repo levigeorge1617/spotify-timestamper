@@ -23,7 +23,8 @@ async function getAppToken() {
   return tokenCache.token;
 }
 
-async function search(q, limit = 12) {
+// Spotify's Feb 2026 API change capped the search endpoint's limit at 10 (was 50).
+async function search(q, limit = 10) {
   const token = await getAppToken();
   const url = 'https://api.spotify.com/v1/search?type=track&limit=' + limit + '&q=' + encodeURIComponent(q);
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
