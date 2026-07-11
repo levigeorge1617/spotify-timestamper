@@ -2,6 +2,7 @@ const path = require('path');
 const express = require('express');
 const { pool, init } = require('./db');
 const { search } = require('./spotify');
+const { containsProfanity } = require('./profanity');
 
 const app = express();
 app.use(express.json());
@@ -102,6 +103,9 @@ app.post('/api/request', async (req, res) => {
   const b = req.body || {};
   if (!b.uri || !/^spotify:track:/.test(b.uri)) return res.status(400).json({ error: 'Invalid track' });
   const requestedBy = (b.requestedBy || 'Anonymous').toString().trim().slice(0, 40) || 'Anonymous';
+  if (containsProfanity(requestedBy)) {
+    return res.status(400).json({ error: 'Please choose a different name — keep it clean.' });
+  }
   const requesterId = (b.requesterId || '').toString().slice(0, 64);
 
   // Per-person cap: count this requester's songs still in play (pending/approved/playing).
