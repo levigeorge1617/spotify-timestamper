@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jukebox Player</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div class="wrap">
+  <h1>Jukebox Player</h1>
+  <p class="sub">Run this on the machine wired to the PA. It plays the approved queue, and falls back to the house playlist when the queue is empty.</p>
+  <div class="nav"><a href="/">Guest view</a><a href="/admin">Admin</a></div>
+
+  <div class="card" id="step-pin">
+    <div class="label">Step 1 — Admin PIN</div>
+    <div class="row">
+      <input type="password" id="pin" placeholder="PIN" style="flex:1;" />
+      <button onclick="savePin()">Continue</button>
+    </div>
+    <div class="hint" id="pin-hint"></div>
+  </div>
+
+  <div class="card hidden" id="step-spotify">
+    <div class="label">Step 2 — Connect Spotify (Premium)</div>
+    <button onclick="startAuth()">Connect Spotify</button>
+    <div class="hint" id="sp-status">Not connected.</div>
+  </div>
+
+  <div class="card hidden" id="step-device">
+    <div class="label">Step 3 — Choose the output device</div>
+    <div class="row">
+      <select id="device" style="flex:1;"></select>
+      <button class="secondary" onclick="loadDevices()">Refresh</button>
+    </div>
+    <div class="hint">Open Spotify on the PA machine and play anything for a second so it shows up here.</div>
+    <div class="row" style="margin-top:14px;">
+      <label for="fade" style="font-size:12px; color:var(--text-dim);">Crossfade</label>
+      <input type="range" id="fade" min="0" max="5" step="0.5" value="2"
+        oninput="document.getElementById('fadeval').textContent=this.value+'s'"
+        style="flex:1; max-width:220px; accent-color:var(--green);" />
+      <span id="fadeval" style="font-size:12px; color:var(--green);">2s</span>
+    </div>
+    <div class="row" style="margin-top:14px;">
+      <button id="btn-start" onclick="startPlaying()">▶ Start jukebox</button>
+      <button id="btn-stop" class="danger" onclick="stopPlaying()" disabled>■ Stop</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="now-playing">
+    <div class="label">Now Playing</div>
+    <div class="np">
+      <img id="np-img" src="" alt="" />
+      <div>
+        <div class="np-name" id="np-name">—</div>
+        <div class="np-meta" id="np-meta"></div>
+        <div class="np-src" id="np-src"></div>
+      </div>
+    </div>
+    <div class="hint" id="pstatus" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<script>
+/* ---------- config / auth (PKCE, mirrors the timestamper) ---------- */
+let CLIENT_ID = '';
+const REDIRECT_URI = window.location.origin + '/player';
+const SCOPES = 'user-read-private streaming user-modify-playback-state user-read-playback-state';
+let accessToken = null, refreshToken = null, tokenExpiry = 0;
+let PIN = sessionStorage.getItem('jukebox_pin') || '';
+
+function api(url, opts){ opts=opts||{}; opts.headers=Object.assign({'Content-Type':'application/json','x-admin-pin':PIN}, opts.headers||{}); return fetch(url, opts); }
+
+async function savePin(){
+  PIN = document.getElementById('pin').value.trim();
+  const r = await api('/api/admin/login', { method:'POST' });
+  if (!r.ok) { document.getElementById('pin-hint').textContent = 'Wrong PIN.'; return; }
+  sessionStorage.setItem('jukebox_pin', PIN);
+  document.getElementById('step-pin').classList.add('hidden');
+  document.getElementById('step-spotify').classList.remove('hidden');
+  if (accessToken) afterSpotify();
+}
+
+function b64url(bytes){ return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,''); }
+function genVerifier(){ const a=new Uint8Array(64); crypto.getRandomValues(a); return b64url(a); }
+async function genChallenge(v){ const d=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)); return b64url(new Uint8Array(d)); }
+async function startAuth(){
+  const v = genVerifier(); sessionStorage.setItem('verifier', v);
+  const c = await genChallenge(v);
+  const p = new URLSearchParams({ client_id:CLIENT_ID, response_type:'code', redirect_uri:REDIRECT_URI, scope:SCOPES, code_challenge_method:'S256', code_challenge:c });
+  window.location.href = 'https://accounts.spotify.com/authorize?' + p.toString();
+}
+async function exchangeCode(code){
+  const v = sessionStorage.getItem('verifier');
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({ client_id:CLIENT_ID, grant_type:'authorization_code', code, redirect_uri:REDIRECT_URI, code_verifier:v })
+  });
+  const d = await res.json();
+  if (d.access_token) { saveTokens(d); window.history.replaceState({},'','/player'); }
+}
+function saveTokens(d){
+  accessToken = d.access_token; tokenExpiry = Date.now() + d.expires_in*1000;
+  localStorage.setItem('pl_token', accessToken); localStorage.setItem('pl_exp', tokenExpiry);
+  if (d.refresh_token){ refreshToken=d.refresh_token; localStorage.setItem('pl_refresh', refreshToken); }
+}
+async function refreshAccessToken(){
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({ client_id:CLIENT_ID, grant_type:'refresh_token', refresh_token:refreshToken })
+    });
+    const d = await res.json();
+    if (d.access_token){ saveTokens(d); return true; }
+  } catch(_){}
+  return false;
+}
+async function ensureToken(){ if (accessToken && Date.now() < tokenExpiry - 5*60*1000) return true; return await refreshAccessToken(); }
+async function spFetch(url, opts){
+  opts=opts||{}; await ensureToken();
+  const withAuth=()=>Object.assign({}, opts, { headers: Object.assign({}, opts.headers, { Authorization:'Bearer '+accessToken }) });
+  let res = await fetch(url, withAuth());
+  if (res.status===401){ if (await refreshAccessToken()) res = await fetch(url, withAuth()); }
+  return res;
+}
+
+function afterSpotify(){
+  document.getElementById('sp-status').textContent = 'Connected.';
+  document.getElementById('step-device').classList.remove('hidden');
+  loadDevices();
+  connectCommands();
+}
+
+/* ---------- devices ---------- */
+async function loadDevices(){
+  const res = await spFetch('https://api.spotify.com/v1/me/player/devices');
+  const d = await res.json();
+  const sel = document.getElementById('device');
+  const devs = d.devices || [];
+  sel.innerHTML = devs.length ? devs.map(x => '<option value="'+x.id+'"'+(x.is_active?' selected':'')+'>'+esc(x.name)+'</option>').join('')
+                              : '<option value="">No devices — open Spotify and play something</option>';
+}
+
+/* ---------- playback ---------- */
+const FADE_STEPS = 10;
+let playing = false, advanceTimer = null, fadeBusy = false, deviceId = null;
+function fadeMs(){ return parseFloat(document.getElementById('fade').value) * 1000; }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function setVolume(pct){
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  await spFetch('https://api.spotify.com/v1/me/player/volume?volume_percent='+v+(deviceId?'&device_id='+deviceId:''), { method:'PUT' });
+}
+async function fade(from, to){
+  fadeBusy = true; const dur = fadeMs();
+  if (dur <= 0){ await setVolume(to); fadeBusy=false; return; }
+  const step = dur/FADE_STEPS;
+  for (let s=1; s<=FADE_STEPS; s++){ await setVolume(from + (to-from)*(s/FADE_STEPS)); await new Promise(r=>setTimeout(r, step)); }
+  fadeBusy = false;
+}
+async function pause(){ await spFetch('https://api.spotify.com/v1/me/player/pause'+(deviceId?'?device_id='+deviceId:''), { method:'PUT' }); }
+
+function setStatus(t){ document.getElementById('pstatus').textContent = t; }
+function showNP(track){
+  document.getElementById('now-playing').classList.remove('hidden');
+  document.getElementById('np-img').src = track.albumArt || '';
+  document.getElementById('np-name').textContent = track.name;
+  document.getElementById('np-meta').textContent = track.artist || '';
+  document.getElementById('np-src').textContent = track.source==='queue'
+    ? (track.requestedBy ? 'Requested by '+track.requestedBy : 'From the queue') : 'House playlist';
+}
+
+async function nextTrack(){
+  const r = await api('/api/player/next', { method:'POST' });
+  const d = await r.json();
+  return d.track;
+}
+
+async function playLoop(){
+  if (!playing) return;
+  const track = await nextTrack();
+  if (!track){
+    setStatus('Nothing to play — add house songs or approve a request. Retrying...');
+    document.getElementById('np-name').textContent = 'Waiting for songs';
+    document.getElementById('np-img').src=''; document.getElementById('np-meta').textContent='';
+    advanceTimer = setTimeout(playLoop, 8000);
+    return;
+  }
+  await playTrack(track);
+}
+
+async function playTrack(track){
+  deviceId = document.getElementById('device').value;
+  if (!deviceId){ setStatus('No output device selected.'); playing=false; return; }
+  showNP(track);
+  setStatus('Fading in...');
+  await setVolume(0);
+  const res = await spFetch('https://api.spotify.com/v1/me/player/play?device_id='+deviceId, {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uris:[track.uri] })
+  });
+  if (res.status === 403){ setStatus('Playback failed — account may not be Premium.'); playing=false; setButtons(); return; }
+  if (res.status === 404){ setStatus('Device not found. Refresh devices and try again.'); playing=false; setButtons(); return; }
+  await fade(0, 100);
+  setStatus('Playing.');
+  clearTimeout(advanceTimer);
+  const dur = track.durationMs || 180000;
+  const wait = Math.max(1000, dur - fadeMs());
+  advanceTimer = setTimeout(async () => {
+    if (!playing) return;
+    setStatus('Fading out...');
+    await fade(100, 0);
+    playLoop();
+  }, wait);
+}
+
+function setButtons(){
+  document.getElementById('btn-start').disabled = playing;
+  document.getElementById('btn-stop').disabled = !playing;
+}
+async function startPlaying(){
+  if (playing) return;
+  playing = true; setButtons();
+  playLoop();
+}
+async function stopPlaying(){
+  playing = false; setButtons();
+  clearTimeout(advanceTimer);
+  if (!fadeBusy) await fade(100, 0);
+  await pause();
+  await setVolume(100);
+  await api('/api/player/stop', { method:'POST' });
+  setStatus('Stopped.');
+}
+
+async function skipNow(){
+  if (!playing) return;
+  clearTimeout(advanceTimer);
+  if (!fadeBusy) await fade(100, 0);
+  playLoop();
+}
+
+/* ---------- admin commands over SSE ---------- */
+function connectCommands(){
+  const es = new EventSource('/api/player/events?pin=' + encodeURIComponent(PIN));
+  es.onmessage = e => {
+    let cmd; try { cmd = JSON.parse(e.data); } catch(_){ return; }
+    if (cmd.type === 'skip') skipNow();
+    else if (cmd.type === 'stop') stopPlaying();
+    else if (cmd.type === 'play') startPlaying();
+  };
+  es.onerror = () => { es.close(); setTimeout(connectCommands, 3000); };
+}
+
+/* ---------- init ---------- */
+(async () => {
+  const cfg = await (await fetch('/api/config')).json();
+  CLIENT_ID = cfg.clientId;
+
+  const code = new URLSearchParams(window.location.search).get('code');
+  accessToken = localStorage.getItem('pl_token');
+  refreshToken = localStorage.getItem('pl_refresh');
+  tokenExpiry = parseInt(localStorage.getItem('pl_exp')) || 0;
+
+  if (code) { await exchangeCode(code); }
+  else if (accessToken && Date.now() >= tokenExpiry && refreshToken) { await refreshAccessToken(); }
+
+  if (PIN) {
+    const r = await api('/api/admin/login', { method:'POST' });
+    if (r.ok) {
+      document.getElementById('step-pin').classList.add('hidden');
+      document.getElementById('step-spotify').classList.remove('hidden');
+    }
+  }
+  if (accessToken && (Date.now() < tokenExpiry || refreshToken) && PIN) afterSpotify();
+})();
+</script>
+</body>
+</html>
