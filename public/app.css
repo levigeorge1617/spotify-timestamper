@@ -93,8 +93,19 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .drag-handle:active { cursor: grabbing; }
 .track.dragging {
-  opacity: 0.6; background: rgba(29,185,84,0.10); border-radius: 6px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+  border-radius: 8px;
+  z-index: 1000;
+  pointer-events: none;
+  border-bottom: none;
   user-select: none;
+}
+.drag-placeholder {
+  border: 2px dashed var(--green);
+  border-radius: 8px;
+  margin: 4px 0;
+  box-sizing: border-box;
 }
 
 .toast {
