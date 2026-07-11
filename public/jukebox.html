@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jukebox</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div class="wrap">
+  <h1>🎵 Jukebox</h1>
+  <p class="sub">Search for a song and add it to the queue. Requests are approved before they play.</p>
+
+  <div id="now-playing" class="card hidden">
+    <div class="label">Now Playing</div>
+    <div class="np">
+      <img id="np-img" src="" alt="" />
+      <div>
+        <div class="np-name" id="np-name">—</div>
+        <div class="np-meta" id="np-meta"></div>
+        <div class="np-src" id="np-src"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Your name</div>
+    <input type="text" id="nickname" placeholder="Who's requesting?" style="width:100%;" maxlength="40" />
+  </div>
+
+  <div class="card">
+    <div class="label">Find a song</div>
+    <div class="row">
+      <input type="search" id="q" placeholder="Song or artist..." style="flex:1;" />
+      <button onclick="doSearch()">Search</button>
+    </div>
+    <div id="results" style="margin-top:12px;"></div>
+    <div class="hint" id="search-hint"></div>
+  </div>
+
+  <div class="card">
+    <div class="label">Up Next</div>
+    <div id="upnext"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const toastEl = document.getElementById('toast');
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toastEl.classList.remove('show'), 2600);
+}
+function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+const nickEl = document.getElementById('nickname');
+nickEl.value = localStorage.getItem('jukebox_nick') || '';
+nickEl.addEventListener('input', () => localStorage.setItem('jukebox_nick', nickEl.value));
+
+async function doSearch() {
+  const q = document.getElementById('q').value.trim();
+  const hint = document.getElementById('search-hint');
+  const box = document.getElementById('results');
+  if (!q) { box.innerHTML = ''; hint.textContent = ''; return; }
+  hint.textContent = 'Searching...';
+  try {
+    const r = await fetch('/api/search?q=' + encodeURIComponent(q));
+    const d = await r.json();
+    if (d.error) { hint.textContent = 'Search error: ' + d.error; return; }
+    hint.textContent = '';
+    if (!d.results.length) { box.innerHTML = '<div class="empty">No matches.</div>'; return; }
+    box.innerHTML = d.results.map((t, i) =>
+      '<div class="track">' +
+        '<img src="' + esc(t.albumArt) + '" alt="" />' +
+        '<div class="info"><div class="t-name">' + esc(t.name) + '</div>' +
+        '<div class="t-meta">' + esc(t.artist) + '</div></div>' +
+        '<div class="actions"><button class="icon" onclick=\'request(' + i + ')\'>Request</button></div>' +
+      '</div>'
+    ).join('');
+    window._results = d.results;
+  } catch (e) { hint.textContent = 'Search failed.'; }
+}
+document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+async function request(i) {
+  const t = window._results[i];
+  const requestedBy = nickEl.value.trim();
+  if (!requestedBy) { toast('Enter your name first'); nickEl.focus(); return; }
+  const r = await fetch('/api/request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...t, requestedBy }),
+  });
+  const d = await r.json();
+  if (d.error) { toast(d.error); return; }
+  toast(d.status === 'approved' ? 'Added to the queue!' : 'Requested — waiting for approval');
+}
+
+function renderState(s) {
+  const np = s.nowPlaying;
+  const npCard = document.getElementById('now-playing');
+  if (np) {
+    npCard.classList.remove('hidden');
+    document.getElementById('np-img').src = np.albumArt || '';
+    document.getElementById('np-name').textContent = np.name;
+    document.getElementById('np-meta').textContent = np.artist || '';
+    document.getElementById('np-src').textContent =
+      np.source === 'queue' ? (np.requestedBy ? 'Requested by ' + np.requestedBy : 'From the queue') : 'House playlist';
+  } else {
+    npCard.classList.add('hidden');
+  }
+  const box = document.getElementById('upnext');
+  if (!s.upNext || !s.upNext.length) { box.innerHTML = '<div class="empty">Nothing queued yet — be the first!</div>'; return; }
+  box.innerHTML = s.upNext.map(t =>
+    '<div class="track">' +
+      '<img src="' + esc(t.album_art) + '" alt="" />' +
+      '<div class="info"><div class="t-name">' + esc(t.name) + '</div>' +
+      '<div class="t-meta">' + esc(t.artist) + (t.requested_by ? ' · ' + esc(t.requested_by) : '') + '</div></div>' +
+    '</div>'
+  ).join('');
+}
+
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onmessage = e => { try { renderState(JSON.parse(e.data)); } catch (_) {} };
+  es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+}
+connect();
+</script>
+</body>
+</html>

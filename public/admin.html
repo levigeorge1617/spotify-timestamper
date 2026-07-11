@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jukebox Admin</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div class="wrap">
+  <h1>Jukebox Admin</h1>
+  <div class="nav">
+    <a href="/">Guest view</a>
+    <a href="/player">Player</a>
+  </div>
+
+  <div id="gate" class="card">
+    <div class="label">Enter admin PIN</div>
+    <div class="row">
+      <input type="password" id="pin" placeholder="PIN" style="flex:1;" />
+      <button onclick="login()">Unlock</button>
+    </div>
+    <div class="hint" id="gate-hint"></div>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="card">
+      <div class="label">Now Playing</div>
+      <div class="np" style="margin-bottom:12px;">
+        <img id="np-img" src="" alt="" />
+        <div>
+          <div class="np-name" id="np-name">Nothing playing</div>
+          <div class="np-meta" id="np-meta"></div>
+          <div class="np-src" id="np-src"></div>
+        </div>
+      </div>
+      <div class="row">
+        <button class="secondary icon" onclick="cmd('play')">▶ Start / Resume</button>
+        <button class="secondary icon" onclick="cmd('skip')">▶▶ Skip</button>
+        <button class="danger icon" onclick="cmd('stop')">■ Stop</button>
+      </div>
+      <div class="hint">These control the Player browser (the one connected to Spotify / the PA).</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div class="label" style="margin:0;">Pending approval</div>
+        <span class="badge dim" id="pending-count">0</span>
+      </div>
+      <div id="pending" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="label">Up Next (approved)</div>
+      <div id="upnext"></div>
+    </div>
+
+    <div class="card">
+      <div class="label">Settings</div>
+      <div class="row">
+        <span style="font-size:13px;">Approval mode</span>
+        <select id="mode" onchange="saveMode()">
+          <option value="strict">Strict — I approve every song</option>
+          <option value="auto">Auto — play requests, I can veto</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">House playlist (plays when the queue is empty)</div>
+      <div class="row" style="margin-bottom:10px;">
+        <input type="search" id="dq" placeholder="Search to add a song..." style="flex:1;" />
+        <button onclick="defSearch()">Search</button>
+      </div>
+      <div id="dresults"></div>
+      <div id="defaults" style="margin-top:6px;"></div>
+      <div class="hint" id="def-hint"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let PIN = sessionStorage.getItem('jukebox_pin') || '';
+const toastEl = document.getElementById('toast');
+function toast(m){ toastEl.textContent=m; toastEl.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>toastEl.classList.remove('show'),2400); }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function api(url, opts){ opts=opts||{}; opts.headers=Object.assign({'Content-Type':'application/json','x-admin-pin':PIN}, opts.headers||{}); return fetch(url, opts); }
+
+async function login(){
+  PIN = document.getElementById('pin').value.trim();
+  const r = await api('/api/admin/login', { method:'POST' });
+  if (r.ok) { sessionStorage.setItem('jukebox_pin', PIN); showApp(); }
+  else { document.getElementById('gate-hint').textContent = 'Wrong PIN.'; }
+}
+function showApp(){
+  document.getElementById('gate').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  loadDefaults();
+  connect();
+}
+if (PIN) { api('/api/admin/login',{method:'POST'}).then(r=>{ if(r.ok) showApp(); }); }
+
+function cmd(type){ api('/api/admin/'+type, { method:'POST' }); }
+
+function renderState(s){
+  const np = s.nowPlaying;
+  document.getElementById('np-img').src = np ? (np.albumArt||'') : '';
+  document.getElementById('np-name').textContent = np ? np.name : 'Nothing playing';
+  document.getElementById('np-meta').textContent = np ? (np.artist||'') : '';
+  document.getElementById('np-src').textContent = np ? (np.source==='queue' ? (np.requestedBy?'Requested by '+np.requestedBy:'From the queue') : 'House playlist') : '';
+
+  document.getElementById('mode').value = s.approvalMode || 'strict';
+
+  const pend = s.pending || [];
+  document.getElementById('pending-count').textContent = pend.length;
+  document.getElementById('pending').innerHTML = pend.length ? pend.map(t =>
+    '<div class="track">' +
+      '<img src="'+esc(t.album_art)+'" alt="" />' +
+      '<div class="info"><div class="t-name">'+esc(t.name)+'</div>' +
+      '<div class="t-meta">'+esc(t.artist)+(t.requested_by?' · '+esc(t.requested_by):'')+'</div></div>' +
+      '<div class="actions">' +
+        '<button class="icon" onclick="approve('+t.id+')">Approve</button>' +
+        '<button class="secondary icon" onclick="reject('+t.id+')">✕</button>' +
+      '</div>' +
+    '</div>'
+  ).join('') : '<div class="empty">No pending requests.</div>';
+
+  const up = s.upNext || [];
+  window._up = up;
+  document.getElementById('upnext').innerHTML = up.length ? up.map((t,i) =>
+    '<div class="track">' +
+      '<img src="'+esc(t.album_art)+'" alt="" />' +
+      '<div class="info"><div class="t-name">'+esc(t.name)+'</div>' +
+      '<div class="t-meta">'+esc(t.artist)+(t.requested_by?' · '+esc(t.requested_by):'')+'</div></div>' +
+      '<div class="actions">' +
+        '<button class="secondary icon" onclick="move('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>' +
+        '<button class="secondary icon" onclick="move('+i+',1)" '+(i===up.length-1?'disabled':'')+'>↓</button>' +
+        '<button class="secondary icon" onclick="remove('+t.id+')">✕</button>' +
+      '</div>' +
+    '</div>'
+  ).join('') : '<div class="empty">Queue is empty — the house playlist will play.</div>';
+}
+
+function approve(id){ api('/api/admin/approve/'+id,{method:'POST'}); }
+function reject(id){ api('/api/admin/reject/'+id,{method:'POST'}); }
+function remove(id){ api('/api/admin/item/'+id,{method:'DELETE'}); }
+function move(i, dir){
+  const up = window._up.slice();
+  const j = i + dir; if (j<0||j>=up.length) return;
+  const tmp = up[i]; up[i]=up[j]; up[j]=tmp;
+  api('/api/admin/reorder',{ method:'POST', body: JSON.stringify({ ids: up.map(t=>t.id) }) });
+}
+function saveMode(){
+  api('/api/admin/settings',{ method:'POST', body: JSON.stringify({ approvalMode: document.getElementById('mode').value }) });
+  toast('Approval mode saved');
+}
+
+/* ---- house playlist ---- */
+async function defSearch(){
+  const q = document.getElementById('dq').value.trim();
+  const box = document.getElementById('dresults');
+  if (!q) { box.innerHTML=''; return; }
+  const r = await fetch('/api/search?q='+encodeURIComponent(q));
+  const d = await r.json();
+  if (d.error) { box.innerHTML = '<div class="empty">'+esc(d.error)+'</div>'; return; }
+  window._dres = d.results;
+  box.innerHTML = d.results.map((t,i) =>
+    '<div class="track">' +
+      '<img src="'+esc(t.albumArt)+'" alt="" />' +
+      '<div class="info"><div class="t-name">'+esc(t.name)+'</div><div class="t-meta">'+esc(t.artist)+'</div></div>' +
+      '<div class="actions"><button class="icon" onclick="addDefault('+i+')">Add</button></div>' +
+    '</div>'
+  ).join('');
+}
+document.getElementById('dq').addEventListener('keydown', e => { if (e.key==='Enter') defSearch(); });
+async function addDefault(i){
+  const t = window._dres[i];
+  await api('/api/admin/defaults',{ method:'POST', body: JSON.stringify(t) });
+  document.getElementById('dresults').innerHTML=''; document.getElementById('dq').value='';
+  toast('Added to house playlist'); loadDefaults();
+}
+async function loadDefaults(){
+  const r = await api('/api/admin/defaults');
+  const d = await r.json();
+  const list = d.tracks || [];
+  window._def = list;
+  document.getElementById('defaults').innerHTML = list.length ? list.map((t,i) =>
+    '<div class="track">' +
+      '<img src="'+esc(t.album_art)+'" alt="" />' +
+      '<div class="info"><div class="t-name">'+esc(t.name)+'</div><div class="t-meta">'+esc(t.artist)+'</div></div>' +
+      '<div class="actions">' +
+        '<button class="secondary icon" onclick="moveDef('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>' +
+        '<button class="secondary icon" onclick="moveDef('+i+',1)" '+(i===list.length-1?'disabled':'')+'>↓</button>' +
+        '<button class="secondary icon" onclick="delDefault('+t.id+')">✕</button>' +
+      '</div>' +
+    '</div>'
+  ).join('') : '<div class="empty">No house songs yet. Add some so there\'s always something to play.</div>';
+}
+async function delDefault(id){ await api('/api/admin/defaults/'+id,{method:'DELETE'}); loadDefaults(); }
+async function moveDef(i,dir){
+  const l = window._def.slice(); const j=i+dir; if(j<0||j>=l.length) return;
+  const tmp=l[i]; l[i]=l[j]; l[j]=tmp;
+  await api('/api/admin/defaults/reorder',{method:'POST', body: JSON.stringify({ ids: l.map(t=>t.id) })});
+  loadDefaults();
+}
+
+function connect(){
+  const es = new EventSource('/api/admin/events?pin=' + encodeURIComponent(PIN));
+  es.onmessage = e => { try { renderState(JSON.parse(e.data)); } catch(_){} };
+  es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+}
+</script>
+</body>
+</html>
